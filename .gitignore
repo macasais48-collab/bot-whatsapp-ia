@@ -1,0 +1,6 @@
+.env
+venv/
+*.db
+__pycache__/
+*.bak-*
+CONTEXTO_BOT_WHATSAPP.md
