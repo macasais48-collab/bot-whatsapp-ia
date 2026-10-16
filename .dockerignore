@@ -1,0 +1,11 @@
+.env
+.env.*
+venv/
+*.db
+__pycache__/
+.git/
+.claude/
+CONTEXTO_BOT_WHATSAPP.md
+*.bak-*
+docs/
+tests/

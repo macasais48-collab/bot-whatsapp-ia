@@ -132,6 +132,15 @@ def fabrica_cliente(tmp_path, monkeypatch, envios):
     return _crear
 
 
+def test_salud_responde_200_ok_sin_exponer_nada(fabrica_cliente):
+    cliente = fabrica_cliente()
+
+    respuesta = cliente.get("/salud")
+
+    assert respuesta.status_code == 200
+    assert respuesta.get_data(as_text=True) == "ok"
+
+
 def test_get_con_token_correcto_devuelve_el_challenge(fabrica_cliente):
     cliente = fabrica_cliente()
 

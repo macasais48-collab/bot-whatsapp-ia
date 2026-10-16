@@ -1,3 +1,4 @@
+import almacenamiento
 from almacenamiento import HistorialSQLite
 
 
@@ -80,3 +81,24 @@ def test_marcar_si_nuevo_distingue_ids_distintos(tmp_path):
     assert historial.marcar_si_nuevo("wamid_1") is True
     assert historial.marcar_si_nuevo("wamid_2") is True
     assert historial.marcar_si_nuevo("wamid_1") is False
+
+
+def test_usa_ruta_bd_de_la_variable_de_entorno_si_esta_definida(tmp_path, monkeypatch):
+    ruta_personalizada = tmp_path / "personalizada.db"
+    monkeypatch.setenv("RUTA_BD", str(ruta_personalizada))
+
+    historial = HistorialSQLite()
+
+    assert historial._ruta_bd == str(ruta_personalizada)
+    assert ruta_personalizada.exists()
+
+
+def test_usa_la_ruta_por_defecto_si_no_hay_variable_de_entorno(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUTA_BD", raising=False)
+    ruta_por_defecto_de_prueba = tmp_path / "por_defecto.db"
+    monkeypatch.setattr(almacenamiento, "RUTA_BD_POR_DEFECTO", ruta_por_defecto_de_prueba)
+
+    historial = HistorialSQLite()
+
+    assert historial._ruta_bd == str(ruta_por_defecto_de_prueba)
+    assert ruta_por_defecto_de_prueba.exists()

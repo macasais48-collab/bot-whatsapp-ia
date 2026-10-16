@@ -163,7 +163,37 @@ Configuración del lado de Meta (resumen, sin IDs ni valores reales):
 pytest
 ```
 
-El proyecto tiene **41 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial y la deduplicación.
+El proyecto tiene **44 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial y la deduplicación.
+
+## Despliegue con Docker
+
+Requisitos: Docker y Docker Compose instalados.
+
+```bash
+cp .env.example .env     # Completa .env con tus propios valores
+docker compose up -d --build
+```
+
+Verificar que el servicio quedó arriba:
+
+```bash
+curl http://127.0.0.1:8000/salud   # Debe responder "ok"
+docker compose ps                  # Debe mostrar "healthy"
+```
+
+Ver los logs:
+
+```bash
+docker compose logs -f bot-whatsapp
+```
+
+Actualizar tras un cambio de código:
+
+```bash
+docker compose up -d --build
+```
+
+El contenedor corre como usuario sin privilegios, con el sistema de archivos en modo solo lectura (salvo `/tmp` y el volumen de datos), y publica el puerto únicamente en `127.0.0.1` — para exponerlo a internet hace falta un proxy inverso con su propio dominio y TLS (no incluido aquí). La base de datos SQLite vive en un volumen nombrado de Docker, independiente del código de la imagen.
 
 ## Limitaciones y próximos pasos
 

@@ -1,0 +1,25 @@
+services:
+  bot-whatsapp:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # No es un secreto: la ruta vive dentro del volumen nombrado, así que no
+      # depende de .env.
+      RUTA_BD: /app/datos/bot_whatsapp.db
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - datos_bot:/app/datos
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 256m
+
+volumes:
+  datos_bot:

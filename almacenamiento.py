@@ -2,13 +2,16 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+from env import obtener_env
 from historial import Historial
 
 RUTA_BD_POR_DEFECTO = Path(__file__).parent / "bot_whatsapp.db"
 
 
 class HistorialSQLite(Historial):
-    def __init__(self, ruta_bd: Path | str = RUTA_BD_POR_DEFECTO) -> None:
+    def __init__(self, ruta_bd: Path | str | None = None) -> None:
+        if ruta_bd is None:
+            ruta_bd = obtener_env("RUTA_BD") or RUTA_BD_POR_DEFECTO
         self._ruta_bd = str(ruta_bd)
         self._inicializar_tablas()
 

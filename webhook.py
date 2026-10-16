@@ -91,6 +91,10 @@ def crear_app(
         else:
             enviar_texto_fn(numero_remitente, respuesta.texto)
 
+    @app.route("/salud", methods=["GET"])
+    def salud():
+        return Response("ok", status=200, mimetype="text/plain")
+
     @app.route("/webhook", methods=["GET"])
     def verificar_webhook():
         modo = request.args.get("hub.mode")
