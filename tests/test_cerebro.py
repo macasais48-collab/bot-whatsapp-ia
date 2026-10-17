@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import holidays
 import pytest
@@ -156,3 +156,22 @@ def test_contexto_de_fecha_en_festivo_colombiano_20_de_julio():
     sistema, _ = fake.ultima_llamada
     assert f"Hoy es {DIAS_SEMANA_ES[festivo.weekday()]}, {festivo.date().isoformat()}" in sistema
     assert "Hoy es festivo en Colombia." in sistema
+
+
+def test_contexto_de_fecha_incluye_un_festivo_dentro_de_los_proximos_90_dias():
+    ahora = datetime(2026, 10, 16, 10, 0, tzinfo=ZONA_BOGOTA)
+    festivo_lejano = date(2026, 11, 2)
+    nombre_festivo = holidays.Colombia().get(festivo_lejano)
+    assert nombre_festivo is not None  # verificación independiente: sí es festivo
+    assert (festivo_lejano - ahora.date()).days <= 90
+
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+    cerebro = Cerebro(fake, HistorialMemoria(), reloj=_reloj_fijo(ahora))
+
+    cerebro.responder("conv1", "¿el lunes 2 de noviembre atienden?")
+
+    sistema, _ = fake.ultima_llamada
+    nombre_limpio = nombre_festivo.replace(" (observado)", "")
+    assert f"{festivo_lejano.isoformat()} {DIAS_SEMANA_ES[festivo_lejano.weekday()]} ({nombre_limpio})" in sistema
+    assert "aplica el horario de festivos del negocio" in sistema
+    assert "observado" not in sistema.lower()

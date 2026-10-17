@@ -24,6 +24,8 @@ DIAS_SEMANA_ES = {
     6: "domingo",
 }
 
+DIAS_FESTIVOS_A_FUTURO = 90
+
 MENSAJE_SEGURO = (
     "No tengo esa información disponible en este momento. "
     "Te voy a derivar con una persona para que te ayude mejor."
@@ -70,12 +72,27 @@ class Cerebro:
         hoy_festivo = hoy in self._festivos_colombia
         manana_festivo = mañana in self._festivos_colombia
 
+        proximos_festivos = []
+        for i in range(DIAS_FESTIVOS_A_FUTURO + 1):
+            dia = hoy + timedelta(days=i)
+            nombre = self._festivos_colombia.get(dia)
+            if nombre:
+                # La librería agrega "(observado)" cuando el festivo se traslada a otro
+                # día (Ley Emiliani); se quita porque no aporta nada a un cliente del bot.
+                nombre = nombre.replace(" (observado)", "")
+                proximos_festivos.append(f"{dia.isoformat()} {DIAS_SEMANA_ES[dia.weekday()]} ({nombre})")
+        lista_festivos = ", ".join(proximos_festivos) if proximos_festivos else "ninguno"
+
         return (
             "Contexto de fecha y hora (zona horaria America/Bogota):\n"
             f"- Hoy es {dia_semana_hoy}, {hoy.isoformat()}, hora {ahora.strftime('%H:%M')}. "
             f"{'Hoy es festivo en Colombia.' if hoy_festivo else 'Hoy no es festivo en Colombia.'}\n"
             f"- Mañana es {dia_semana_manana}, {mañana.isoformat()}. "
-            f"{'Mañana es festivo en Colombia.' if manana_festivo else 'Mañana no es festivo en Colombia.'}"
+            f"{'Mañana es festivo en Colombia.' if manana_festivo else 'Mañana no es festivo en Colombia.'}\n"
+            f"- Festivos en Colombia en los próximos {DIAS_FESTIVOS_A_FUTURO} días: {lista_festivos}. "
+            "En cualquiera de esas fechas (o en cualquier otro festivo colombiano que el "
+            "cliente mencione), aplica el horario de festivos del negocio: si el negocio "
+            "cierra los festivos, responde que ese día está cerrado."
         )
 
     def _construir_prompt_base(self, ruta_negocio: Path) -> str:
