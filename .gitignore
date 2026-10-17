@@ -4,3 +4,5 @@ venv/
 __pycache__/
 *.bak-*
 CONTEXTO_BOT_WHATSAPP.md
+CLAUDE.md
+.claude/settings.local.json
