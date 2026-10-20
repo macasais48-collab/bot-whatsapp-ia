@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+from pathlib import Path
 
 from flask import Flask, Response, request
 
@@ -20,6 +21,12 @@ logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 PUERTOS_PROHIBIDOS = {5000, 5001}
 
+PERFIL_NEGOCIO_POR_DEFECTO = "panaderia"
+PERFILES_NEGOCIO = {
+    "panaderia": Path(__file__).parent / "negocio.md",
+    "camilo": Path(__file__).parent / "perfil_camilo.md",
+}
+
 MENSAJE_DERIVACION = "Te comunico con una persona de nuestro equipo, que te responderá pronto."
 MENSAJE_SOLO_TEXTO = (
     "Por ahora solo puedo atender mensajes de texto. "
@@ -33,6 +40,17 @@ def _enmascarar_numero(numero: str) -> str:
     if len(numero) <= 4:
         return "*" * len(numero)
     return "*" * (len(numero) - 4) + numero[-4:]
+
+
+def _resolver_ruta_negocio() -> Path:
+    clave = obtener_env("PERFIL_NEGOCIO") or PERFIL_NEGOCIO_POR_DEFECTO
+    if clave not in PERFILES_NEGOCIO:
+        raise ValueError(
+            "PERFIL_NEGOCIO no es válido. Valores permitidos: "
+            + ", ".join(sorted(PERFILES_NEGOCIO))
+            + "."
+        )
+    return PERFILES_NEGOCIO[clave]
 
 
 def _firma_valida(cuerpo_crudo: bytes, firma_recibida: str | None) -> bool:
@@ -55,7 +73,7 @@ def crear_app(
     if historial_dedup is None:
         historial_dedup = HistorialSQLite()
     if cerebro is None:
-        cerebro = Cerebro(crear_proveedor_ia(), historial_dedup)
+        cerebro = Cerebro(crear_proveedor_ia(), historial_dedup, ruta_negocio=_resolver_ruta_negocio())
 
     @app.after_request
     def _registrar_peticion(respuesta):

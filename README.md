@@ -87,9 +87,20 @@ Cuando llega un mensaje, el webhook valida la firma del envío, descarta duplica
 
 Este repositorio es un **núcleo genérico**, pensado para adaptarse a distintos negocios sin tocar la lógica central:
 
-- La información del negocio vive en `negocio.md`: para un negocio nuevo, solo se reemplaza ese archivo.
+- La información del negocio vive en un archivo de perfil (ver "Perfiles de negocio" abajo): para un negocio nuevo, solo se agrega un archivo.
 - Las credenciales y la configuración viven en `.env`: para un cliente nuevo, solo cambia ese archivo.
 - El proveedor de IA está detrás de una interfaz común (`llm/base.py`): hoy usa Claude, y está preparado para agregar otros proveedores sin cambiar `cerebro.py` ni `webhook.py`.
+
+### Perfiles de negocio
+
+El webhook elige qué información de negocio usar según la variable `PERFIL_NEGOCIO`, contra una lista cerrada de perfiles conocidos:
+
+| Valor | Archivo | Uso |
+| --- | --- | --- |
+| *(vacío, por defecto)* o `panaderia` | `negocio.md` | Demo del proyecto (Panadería San Roque). |
+| `camilo` | `perfil_camilo.md` | Presenta el servicio de Camilo a dueños de negocio interesados en contratarlo. |
+
+Un valor distinto a estos dos hace que el bot **falle al arrancar** con un mensaje claro, en vez de usar un perfil por defecto en silencio. Cada perfil nuevo requiere su propio despliegue (su propio número de WhatsApp), ya que un número solo puede atender un perfil a la vez.
 
 ## Estructura del proyecto
 

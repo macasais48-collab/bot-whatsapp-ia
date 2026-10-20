@@ -1,5 +1,6 @@
 import json
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import holidays
 import pytest
@@ -175,3 +176,18 @@ def test_contexto_de_fecha_incluye_un_festivo_dentro_de_los_proximos_90_dias():
     assert f"{festivo_lejano.isoformat()} {DIAS_SEMANA_ES[festivo_lejano.weekday()]} ({nombre_limpio})" in sistema
     assert "aplica el horario de festivos del negocio" in sistema
     assert "observado" not in sistema.lower()
+
+
+def test_cerebro_puede_cargar_el_perfil_de_camilo():
+    ruta_perfil_camilo = Path(__file__).parent.parent / "perfil_camilo.md"
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_negocio=ruta_perfil_camilo)
+
+    cerebro.responder("conv1", "hola")
+
+    sistema, _ = fake.ultima_llamada
+    assert "Camilo Uribe" in sistema
+    assert "Panadería San Roque" not in sistema
+    assert "Ley 1581 de 2012" in sistema
+    assert "¿Está de acuerdo?" in sistema
+    assert "de a dos por mensaje" in sistema

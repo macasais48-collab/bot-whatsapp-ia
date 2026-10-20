@@ -9,7 +9,14 @@ from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
 from historial import HistorialMemoria
 from llm.base import ProveedorIA
-from webhook import MENSAJE_DERIVACION, MENSAJE_SOLO_TEXTO, crear_app
+from webhook import (
+    MENSAJE_DERIVACION,
+    MENSAJE_SOLO_TEXTO,
+    PERFIL_NEGOCIO_POR_DEFECTO,
+    PERFILES_NEGOCIO,
+    _resolver_ruta_negocio,
+    crear_app,
+)
 
 APP_SECRET = "secreto_de_prueba"
 VERIFY_TOKEN = "token_de_prueba"
@@ -287,3 +294,26 @@ def test_post_con_firma_invalida_registra_diagnostico_sin_exponer_nada(fabrica_c
     mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
     assert "no coincide" in mensajes.lower()
     assert firma_falsa not in mensajes
+
+
+def test_resolver_ruta_negocio_usa_panaderia_si_no_esta_definida(monkeypatch):
+    monkeypatch.delenv("PERFIL_NEGOCIO", raising=False)
+
+    assert _resolver_ruta_negocio() == PERFILES_NEGOCIO[PERFIL_NEGOCIO_POR_DEFECTO]
+
+
+def test_resolver_ruta_negocio_carga_el_perfil_de_camilo(monkeypatch):
+    monkeypatch.setenv("PERFIL_NEGOCIO", "camilo")
+
+    assert _resolver_ruta_negocio() == PERFILES_NEGOCIO["camilo"]
+
+
+def test_resolver_ruta_negocio_falla_con_valor_desconocido(monkeypatch):
+    monkeypatch.setenv("PERFIL_NEGOCIO", "no-existe")
+
+    with pytest.raises(ValueError) as info:
+        _resolver_ruta_negocio()
+
+    assert "PERFIL_NEGOCIO no es válido" in str(info.value)
+    assert "panaderia" in str(info.value)
+    assert "camilo" in str(info.value)
