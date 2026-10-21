@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+import time
 from pathlib import Path
 
 from flask import Flask, Response, request
@@ -27,11 +28,14 @@ PERFILES_NEGOCIO = {
     "camilo": Path(__file__).parent / "perfil_camilo.md",
 }
 
-MENSAJE_DERIVACION = "Te comunico con una persona de nuestro equipo, que te responderá pronto."
+MENSAJE_DERIVACION_POR_DEFECTO = "Le comunico con una persona de nuestro equipo, que le responderá pronto."
 MENSAJE_SOLO_TEXTO = (
     "Por ahora solo puedo atender mensajes de texto. "
     "Escríbeme tu pregunta y con gusto te ayudo."
 )
+
+MARCADOR_MENSAJE_DERIVACION = "## Mensaje de derivación"
+UMBRAL_MENSAJE_VIEJO_SEGUNDOS = 5 * 60
 
 
 def _enmascarar_numero(numero: str) -> str:
@@ -53,6 +57,19 @@ def _resolver_ruta_negocio() -> Path:
     return PERFILES_NEGOCIO[clave]
 
 
+def _extraer_mensaje_derivacion(ruta_negocio: Path) -> str:
+    contenido = ruta_negocio.read_text(encoding="utf-8")
+    inicio = contenido.find(MARCADOR_MENSAJE_DERIVACION)
+    if inicio == -1:
+        return MENSAJE_DERIVACION_POR_DEFECTO
+
+    resto = contenido[inicio + len(MARCADOR_MENSAJE_DERIVACION):]
+    fin = resto.find("\n## ")
+    seccion = resto if fin == -1 else resto[:fin]
+    texto = seccion.strip()
+    return texto or MENSAJE_DERIVACION_POR_DEFECTO
+
+
 def _firma_valida(cuerpo_crudo: bytes, firma_recibida: str | None) -> bool:
     app_secret = obtener_env("META_APP_SECRET")
     if not app_secret or not firma_recibida or not firma_recibida.startswith("sha256="):
@@ -67,13 +84,19 @@ def crear_app(
     cerebro: Cerebro | None = None,
     historial_dedup: HistorialSQLite | None = None,
     enviar_texto_fn=enviar_texto,
+    mensaje_derivacion: str | None = None,
+    reloj=time.time,
 ) -> Flask:
     app = Flask(__name__)
 
     if historial_dedup is None:
         historial_dedup = HistorialSQLite()
+    if cerebro is None or mensaje_derivacion is None:
+        ruta_negocio_resuelta = _resolver_ruta_negocio()
     if cerebro is None:
-        cerebro = Cerebro(crear_proveedor_ia(), historial_dedup, ruta_negocio=_resolver_ruta_negocio())
+        cerebro = Cerebro(crear_proveedor_ia(), historial_dedup, ruta_negocio=ruta_negocio_resuelta)
+    if mensaje_derivacion is None:
+        mensaje_derivacion = _extraer_mensaje_derivacion(ruta_negocio_resuelta)
 
     @app.after_request
     def _registrar_peticion(respuesta):
@@ -86,6 +109,20 @@ def crear_app(
         id_mensaje = mensaje.get("id")
         numero_remitente = mensaje.get("from", "")
         numero_enmascarado = _enmascarar_numero(numero_remitente)
+
+        timestamp_mensaje = mensaje.get("timestamp")
+        if timestamp_mensaje is not None:
+            try:
+                antiguedad_segundos = reloj() - int(timestamp_mensaje)
+            except (TypeError, ValueError):
+                antiguedad_segundos = None
+            if antiguedad_segundos is not None and antiguedad_segundos > UMBRAL_MENSAJE_VIEJO_SEGUNDOS:
+                logger.info(
+                    "Mensaje antiguo ignorado (tipo=%s, antiguedad_segundos=%d)",
+                    mensaje.get("type"),
+                    int(antiguedad_segundos),
+                )
+                return
 
         if id_mensaje and not historial_dedup.marcar_si_nuevo(id_mensaje):
             logger.info("Mensaje duplicado ignorado (remitente=%s)", numero_enmascarado)
@@ -105,7 +142,7 @@ def crear_app(
 
         if respuesta.derivar:
             logger.info("Conversación derivada a una persona (remitente=%s)", numero_enmascarado)
-            enviar_texto_fn(numero_remitente, MENSAJE_DERIVACION)
+            enviar_texto_fn(numero_remitente, mensaje_derivacion)
         else:
             enviar_texto_fn(numero_remitente, respuesta.texto)
 

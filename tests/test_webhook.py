@@ -10,16 +10,23 @@ from cerebro import Cerebro
 from historial import HistorialMemoria
 from llm.base import ProveedorIA
 from webhook import (
-    MENSAJE_DERIVACION,
+    MENSAJE_DERIVACION_POR_DEFECTO,
     MENSAJE_SOLO_TEXTO,
     PERFIL_NEGOCIO_POR_DEFECTO,
     PERFILES_NEGOCIO,
+    UMBRAL_MENSAJE_VIEJO_SEGUNDOS,
+    _extraer_mensaje_derivacion,
     _resolver_ruta_negocio,
     crear_app,
 )
 
 APP_SECRET = "secreto_de_prueba"
 VERIFY_TOKEN = "token_de_prueba"
+
+# Todos los payloads de prueba traen "timestamp": "1700000000" (ver _payload_mensaje).
+# El reloj de prueba se fija justo 10 segundos después, para que ese timestamp
+# siempre cuente como "reciente" salvo que una prueba quiera lo contrario a propósito.
+RELOJ_PRUEBA_SEGUNDOS = 1700000000 + 10
 
 
 class FakeProveedor(ProveedorIA):
@@ -127,12 +134,17 @@ def fabrica_cliente(tmp_path, monkeypatch, envios):
 
     contador = {"n": 0}
 
-    def _crear(salida_ia='{"respuesta": "ok", "derivar": false}'):
+    def _crear(salida_ia='{"respuesta": "ok", "derivar": false}', reloj=None):
         contador["n"] += 1
         fake_proveedor = FakeProveedor(salida_ia)
         historial_dedup = HistorialSQLite(tmp_path / f"prueba_{contador['n']}.db")
         cerebro = Cerebro(fake_proveedor, HistorialMemoria())
-        app = crear_app(cerebro=cerebro, historial_dedup=historial_dedup, enviar_texto_fn=envios)
+        app = crear_app(
+            cerebro=cerebro,
+            historial_dedup=historial_dedup,
+            enviar_texto_fn=envios,
+            reloj=reloj or (lambda: RELOJ_PRUEBA_SEGUNDOS),
+        )
         app.testing = True
         return app.test_client()
 
@@ -247,7 +259,7 @@ def test_post_con_derivar_true_envia_mensaje_de_derivacion(fabrica_cliente, envi
     respuesta = _post_con_firma(cliente, payload)
 
     assert respuesta.status_code == 200
-    assert envios.llamadas == [("573001112233", MENSAJE_DERIVACION)]
+    assert envios.llamadas == [("573001112233", MENSAJE_DERIVACION_POR_DEFECTO)]
 
 
 def test_get_no_registra_el_token_ni_el_challenge_en_los_logs(fabrica_cliente, caplog):
@@ -317,3 +329,44 @@ def test_resolver_ruta_negocio_falla_con_valor_desconocido(monkeypatch):
     assert "PERFIL_NEGOCIO no es válido" in str(info.value)
     assert "panaderia" in str(info.value)
     assert "camilo" in str(info.value)
+
+
+def test_extraer_mensaje_derivacion_usa_el_default_si_el_perfil_no_tiene_seccion():
+    assert _extraer_mensaje_derivacion(PERFILES_NEGOCIO["panaderia"]) == MENSAJE_DERIVACION_POR_DEFECTO
+
+
+def test_extraer_mensaje_derivacion_lee_la_seccion_del_perfil_camilo():
+    mensaje = _extraer_mensaje_derivacion(PERFILES_NEGOCIO["camilo"])
+
+    assert mensaje == (
+        "Le comunico con Camilo, que le responderá en su horario de atención "
+        "(lunes a sábado, 8:00 a.m. a 6:00 p.m.)."
+    )
+    assert mensaje != MENSAJE_DERIVACION_POR_DEFECTO
+
+
+def test_mensaje_viejo_se_ignora_sin_responder(fabrica_cliente, envios, caplog):
+    caplog.set_level(logging.INFO, logger="webhook")
+    cliente = fabrica_cliente()
+    timestamp_viejo = str(RELOJ_PRUEBA_SEGUNDOS - UMBRAL_MENSAJE_VIEJO_SEGUNDOS - 100)
+    payload = _payload_mensaje("wamid.viejo", "573001112233", {"type": "text", "text": {"body": "hola"}})
+    payload["entry"][0]["changes"][0]["value"]["messages"][0]["timestamp"] = timestamp_viejo
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == []
+    mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
+    assert "antiguo" in mensajes.lower()
+
+
+def test_mensaje_reciente_se_procesa_normalmente(fabrica_cliente, envios):
+    cliente = fabrica_cliente(json.dumps({"respuesta": "Abrimos a las 6am", "derivar": False}))
+    timestamp_reciente = str(RELOJ_PRUEBA_SEGUNDOS - 30)
+    payload = _payload_mensaje_texto("wamid.reciente", "573001112233", "¿a qué hora abren?")
+    payload["entry"][0]["changes"][0]["value"]["messages"][0]["timestamp"] = timestamp_reciente
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", "Abrimos a las 6am")]
