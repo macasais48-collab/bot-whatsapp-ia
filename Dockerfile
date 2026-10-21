@@ -18,6 +18,7 @@ COPY --chown=appuser:appuser \
     env.py \
     historial.py \
     negocio.md \
+    perfil_camilo.md \
     webhook.py \
     whatsapp.py \
     ./
