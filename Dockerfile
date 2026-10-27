@@ -17,8 +17,12 @@ COPY --chown=appuser:appuser \
     cerebro.py \
     env.py \
     historial.py \
+    mensajes_enriquecidos.py \
     negocio.md \
     perfil_camilo.md \
+    recursos.py \
+    recursos_camilo.json \
+    recursos_panaderia.json \
     webhook.py \
     whatsapp.py \
     ./

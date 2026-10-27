@@ -1,5 +1,6 @@
 import json
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -9,6 +10,9 @@ import holidays
 from env import obtener_env
 from historial import Historial
 from llm.base import ProveedorIA
+from recursos import cargar_recursos
+
+logger = logging.getLogger(__name__)
 
 RUTA_NEGOCIO_POR_DEFECTO = Path(__file__).parent / "negocio.md"
 
@@ -40,6 +44,7 @@ def _reloj_por_defecto() -> datetime:
 class Respuesta:
     texto: str
     derivar: bool
+    adjuntos: list = field(default_factory=list)
 
 
 class Cerebro:
@@ -48,6 +53,7 @@ class Cerebro:
         proveedor_ia: ProveedorIA,
         historial: Historial,
         ruta_negocio: Path = RUTA_NEGOCIO_POR_DEFECTO,
+        ruta_recursos: Path | None = None,
         reloj=_reloj_por_defecto,
     ) -> None:
         self._proveedor_ia = proveedor_ia
@@ -60,7 +66,13 @@ class Cerebro:
             # No se re-lanza la excepción original: su mensaje incluye el valor
             # inválido de la variable de entorno.
             raise ValueError("MAX_TURNOS_HISTORIAL no es válido. Debe ser un número entero.") from None
-        self._prompt_base = self._construir_prompt_base(ruta_negocio)
+        # Falla al arrancar si el JSON de recursos del perfil está mal formado,
+        # igual que con PERFIL_NEGOCIO: mejor un error claro ahora que uno confuso
+        # a mitad de una conversación real.
+        self._recursos = cargar_recursos(ruta_recursos) if ruta_recursos is not None else {}
+        self._prompt_base = (
+            self._construir_prompt_base(ruta_negocio) + "\n\n" + self._construir_descripcion_recursos()
+        )
 
     def _construir_contexto_fecha(self) -> str:
         ahora = self._reloj()
@@ -106,10 +118,70 @@ class Cerebro:
             "dilo con honestidad y marca que se debe derivar a una persona.\n\n"
             "Responde SIEMPRE y SOLO con un objeto JSON válido, sin texto adicional "
             "antes ni después, con exactamente esta forma:\n"
-            '{"respuesta": "<tu respuesta en español>", "derivar": true o false}\n\n'
+            '{"respuesta": "<tu respuesta en español>", "derivar": true o false, '
+            '"adjuntos": [<opcional: objetos como {"tipo": "ubicacion"} o '
+            '{"tipo": "enlace", "clave": "<clave>"}>]}\n\n'
+            "El campo 'adjuntos' es opcional: inclúyelo solo con las claves listadas en "
+            "'Recursos disponibles' más abajo, cuando le sirvan al cliente. Nunca inventes "
+            "una clave, URL o coordenada que no esté en esa lista. Si no hace falta ningún "
+            "adjunto, omite el campo o deja la lista vacía.\n\n"
             "Información del negocio:\n"
             f"{info_negocio}"
         )
+
+    def _construir_descripcion_recursos(self) -> str:
+        if not self._recursos:
+            return "Recursos disponibles para adjuntar: ninguno en este perfil."
+
+        lineas = ["Recursos disponibles para adjuntar (usa SOLO estas claves cuando ayuden al cliente):"]
+        if "ubicacion" in self._recursos:
+            lineas.append(
+                '- {"tipo": "ubicacion"}: comparte la ubicación del negocio. Úsalo cuando '
+                "el cliente pregunte dónde queda, pida la dirección o un mapa."
+            )
+        for clave, enlace in self._recursos.get("enlaces", {}).items():
+            lineas.append(
+                f'- {{"tipo": "enlace", "clave": "{clave}"}}: botón "{enlace["texto_boton"]}".'
+            )
+        return "\n".join(lineas)
+
+    def _resolver_adjunto(self, item: dict) -> dict | None:
+        tipo = item.get("tipo")
+        if tipo == "ubicacion":
+            datos_ubicacion = self._recursos.get("ubicacion")
+            if datos_ubicacion is not None:
+                return {"tipo": "ubicacion", "datos": datos_ubicacion}
+            return None
+        if tipo == "enlace":
+            enlace = self._recursos.get("enlaces", {}).get(item.get("clave"))
+            if enlace is not None:
+                return {"tipo": "enlace", "datos": enlace}
+            return None
+        return None
+
+    def _resolver_adjuntos(self, bruto) -> list:
+        # Nunca debe propagar una excepción: un adjunto mal formado jamás puede
+        # tirar abajo la respuesta de texto que ya se validó.
+        try:
+            if not isinstance(bruto, list):
+                if bruto:
+                    logger.warning("Campo 'adjuntos' con forma inesperada, se ignora: %r", bruto)
+                return []
+
+            resultado = []
+            for item in bruto:
+                if not isinstance(item, dict):
+                    logger.warning("Adjunto descartado: no es un objeto (%r).", item)
+                    continue
+                adjunto_resuelto = self._resolver_adjunto(item)
+                if adjunto_resuelto is None:
+                    logger.warning("Adjunto descartado (tipo o clave inexistente en el perfil): %r", item)
+                else:
+                    resultado.append(adjunto_resuelto)
+            return resultado
+        except Exception:
+            logger.warning("Error inesperado al procesar 'adjuntos'; se omiten todos.", exc_info=True)
+            return []
 
     def responder(self, id_conversacion: str, texto: str) -> Respuesta:
         mensajes_previos = self._historial.obtener(id_conversacion, self._max_turnos)
@@ -117,6 +189,7 @@ class Cerebro:
 
         respuesta_texto = MENSAJE_SEGURO
         derivar = True
+        adjuntos_validos = []
 
         try:
             prompt_completo = self._prompt_base + "\n\n" + self._construir_contexto_fecha()
@@ -127,6 +200,9 @@ class Cerebro:
             if isinstance(candidato_texto, str) and isinstance(candidato_derivar, bool):
                 respuesta_texto = candidato_texto
                 derivar = candidato_derivar
+                # _resolver_adjuntos nunca lanza: un adjunto inválido no puede
+                # invalidar la respuesta de texto que ya se validó arriba.
+                adjuntos_validos = self._resolver_adjuntos(datos.get("adjuntos", []))
         except Exception:
             # Límite del sistema: JSON inválido, claves faltantes o fallo de la API
             # externa. En cualquiera de esos casos se usa el mensaje seguro.
@@ -135,4 +211,4 @@ class Cerebro:
         self._historial.agregar(id_conversacion, "user", texto)
         self._historial.agregar(id_conversacion, "assistant", respuesta_texto)
 
-        return Respuesta(texto=respuesta_texto, derivar=derivar)
+        return Respuesta(texto=respuesta_texto, derivar=derivar, adjuntos=adjuntos_validos)

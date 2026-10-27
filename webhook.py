@@ -10,6 +10,7 @@ from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
 from env import obtener_env
 from llm import crear_proveedor_ia
+from mensajes_enriquecidos import enviar_cta_url, enviar_ubicacion
 from whatsapp import enviar_texto
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,10 @@ PERFIL_NEGOCIO_POR_DEFECTO = "panaderia"
 PERFILES_NEGOCIO = {
     "panaderia": Path(__file__).parent / "negocio.md",
     "camilo": Path(__file__).parent / "perfil_camilo.md",
+}
+RECURSOS_NEGOCIO = {
+    "panaderia": Path(__file__).parent / "recursos_panaderia.json",
+    "camilo": Path(__file__).parent / "recursos_camilo.json",
 }
 
 MENSAJE_DERIVACION_POR_DEFECTO = "Le comunico con una persona de nuestro equipo, que le responderá pronto."
@@ -46,7 +51,7 @@ def _enmascarar_numero(numero: str) -> str:
     return "*" * (len(numero) - 4) + numero[-4:]
 
 
-def _resolver_ruta_negocio() -> Path:
+def _resolver_clave_perfil() -> str:
     clave = obtener_env("PERFIL_NEGOCIO") or PERFIL_NEGOCIO_POR_DEFECTO
     if clave not in PERFILES_NEGOCIO:
         raise ValueError(
@@ -54,7 +59,15 @@ def _resolver_ruta_negocio() -> Path:
             + ", ".join(sorted(PERFILES_NEGOCIO))
             + "."
         )
-    return PERFILES_NEGOCIO[clave]
+    return clave
+
+
+def _resolver_ruta_negocio() -> Path:
+    return PERFILES_NEGOCIO[_resolver_clave_perfil()]
+
+
+def _resolver_ruta_recursos() -> Path:
+    return RECURSOS_NEGOCIO[_resolver_clave_perfil()]
 
 
 def _extraer_mensaje_derivacion(ruta_negocio: Path) -> str:
@@ -84,6 +97,8 @@ def crear_app(
     cerebro: Cerebro | None = None,
     historial_dedup: HistorialSQLite | None = None,
     enviar_texto_fn=enviar_texto,
+    enviar_ubicacion_fn=enviar_ubicacion,
+    enviar_cta_url_fn=enviar_cta_url,
     mensaje_derivacion: str | None = None,
     reloj=time.time,
 ) -> Flask:
@@ -94,7 +109,12 @@ def crear_app(
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = _resolver_ruta_negocio()
     if cerebro is None:
-        cerebro = Cerebro(crear_proveedor_ia(), historial_dedup, ruta_negocio=ruta_negocio_resuelta)
+        cerebro = Cerebro(
+            crear_proveedor_ia(),
+            historial_dedup,
+            ruta_negocio=ruta_negocio_resuelta,
+            ruta_recursos=_resolver_ruta_recursos(),
+        )
     if mensaje_derivacion is None:
         mensaje_derivacion = _extraer_mensaje_derivacion(ruta_negocio_resuelta)
 
@@ -145,6 +165,19 @@ def crear_app(
             enviar_texto_fn(numero_remitente, mensaje_derivacion)
         else:
             enviar_texto_fn(numero_remitente, respuesta.texto)
+
+        for adjunto in respuesta.adjuntos:
+            _enviar_adjunto(numero_remitente, adjunto)
+
+    def _enviar_adjunto(numero: str, adjunto: dict) -> None:
+        # cerebro.py ya validó el adjunto contra los recursos del perfil: aquí solo
+        # se despacha al tipo correspondiente, en el orden en que llegaron.
+        tipo = adjunto["tipo"]
+        datos = adjunto["datos"]
+        if tipo == "ubicacion":
+            enviar_ubicacion_fn(numero, datos["latitud"], datos["longitud"], datos["nombre"], datos["direccion"])
+        elif tipo == "enlace":
+            enviar_cta_url_fn(numero, datos["descripcion"], datos["texto_boton"], datos["url"])
 
     @app.route("/salud", methods=["GET"])
     def salud():

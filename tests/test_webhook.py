@@ -46,6 +46,24 @@ class EnviosFalsos:
         return True
 
 
+class EnviosUbicacionFalsos:
+    def __init__(self):
+        self.llamadas = []
+
+    def __call__(self, numero, latitud, longitud, nombre, direccion):
+        self.llamadas.append((numero, latitud, longitud, nombre, direccion))
+        return True
+
+
+class EnviosCtaUrlFalsos:
+    def __init__(self):
+        self.llamadas = []
+
+    def __call__(self, numero, texto_cuerpo, texto_boton, url):
+        self.llamadas.append((numero, texto_cuerpo, texto_boton, url))
+        return True
+
+
 def _firmar(cuerpo: bytes) -> str:
     return "sha256=" + hmac.new(APP_SECRET.encode("utf-8"), cuerpo, hashlib.sha256).hexdigest()
 
@@ -128,21 +146,33 @@ def envios():
 
 
 @pytest.fixture
-def fabrica_cliente(tmp_path, monkeypatch, envios):
+def envios_ubicacion():
+    return EnviosUbicacionFalsos()
+
+
+@pytest.fixture
+def envios_cta_url():
+    return EnviosCtaUrlFalsos()
+
+
+@pytest.fixture
+def fabrica_cliente(tmp_path, monkeypatch, envios, envios_ubicacion, envios_cta_url):
     monkeypatch.setenv("META_APP_SECRET", APP_SECRET)
     monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", VERIFY_TOKEN)
 
     contador = {"n": 0}
 
-    def _crear(salida_ia='{"respuesta": "ok", "derivar": false}', reloj=None):
+    def _crear(salida_ia='{"respuesta": "ok", "derivar": false}', reloj=None, ruta_recursos=None):
         contador["n"] += 1
         fake_proveedor = FakeProveedor(salida_ia)
         historial_dedup = HistorialSQLite(tmp_path / f"prueba_{contador['n']}.db")
-        cerebro = Cerebro(fake_proveedor, HistorialMemoria())
+        cerebro = Cerebro(fake_proveedor, HistorialMemoria(), ruta_recursos=ruta_recursos)
         app = crear_app(
             cerebro=cerebro,
             historial_dedup=historial_dedup,
             enviar_texto_fn=envios,
+            enviar_ubicacion_fn=envios_ubicacion,
+            enviar_cta_url_fn=envios_cta_url,
             reloj=reloj or (lambda: RELOJ_PRUEBA_SEGUNDOS),
         )
         app.testing = True
@@ -370,3 +400,92 @@ def test_mensaje_reciente_se_procesa_normalmente(fabrica_cliente, envios):
 
     assert respuesta.status_code == 200
     assert envios.llamadas == [("573001112233", "Abrimos a las 6am")]
+
+
+RECURSOS_DE_PRUEBA_WEBHOOK = {
+    "ubicacion": {
+        "latitud": 4.73,
+        "longitud": -74.26,
+        "nombre": "Negocio de ejemplo",
+        "direccion": "Calle falsa 123",
+    },
+    "enlaces": {
+        "mapa": {
+            "url": "https://maps.google.com/?q=4.73,-74.26",
+            "texto_boton": "Ver en el mapa",
+            "descripcion": "Así puedes ver nuestra ubicación.",
+        }
+    },
+}
+
+
+def _escribir_recursos_webhook(tmp_path, datos):
+    ruta = tmp_path / "recursos_webhook.json"
+    ruta.write_text(json.dumps(datos), encoding="utf-8")
+    return ruta
+
+
+def test_adjunto_de_ubicacion_valido_se_envia_despues_del_texto(fabrica_cliente, envios, envios_ubicacion, tmp_path):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps({"respuesta": "Quedamos aquí", "derivar": False, "adjuntos": [{"tipo": "ubicacion"}]}),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "¿dónde quedan?")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", "Quedamos aquí")]
+    assert envios_ubicacion.llamadas == [
+        ("573001112233", 4.73, -74.26, "Negocio de ejemplo", "Calle falsa 123")
+    ]
+
+
+def test_adjunto_de_enlace_valido_se_envia_despues_del_texto(fabrica_cliente, envios, envios_cta_url, tmp_path):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps(
+            {"respuesta": "Aquí tienes", "derivar": False, "adjuntos": [{"tipo": "enlace", "clave": "mapa"}]}
+        ),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "¿tienen mapa?")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", "Aquí tienes")]
+    assert envios_cta_url.llamadas == [
+        (
+            "573001112233",
+            "Así puedes ver nuestra ubicación.",
+            "Ver en el mapa",
+            "https://maps.google.com/?q=4.73,-74.26",
+        )
+    ]
+
+
+def test_clave_de_adjunto_inventada_por_la_ia_nunca_se_envia(
+    fabrica_cliente, envios, envios_ubicacion, envios_cta_url, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps(
+            {
+                "respuesta": "Aquí tienes",
+                "derivar": False,
+                "adjuntos": [{"tipo": "enlace", "clave": "clave_inventada"}],
+            }
+        ),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "¿tienen catálogo?")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    # El texto normal se envía igual; ningún envío enriquecido ocurre para la clave inventada.
+    assert envios.llamadas == [("573001112233", "Aquí tienes")]
+    assert envios_ubicacion.llamadas == []
+    assert envios_cta_url.llamadas == []

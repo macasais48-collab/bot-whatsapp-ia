@@ -102,6 +102,14 @@ El webhook elige qué información de negocio usar según la variable `PERFIL_NE
 
 Un valor distinto a estos dos hace que el bot **falle al arrancar** con un mensaje claro, en vez de usar un perfil por defecto en silencio. Cada perfil nuevo requiere su propio despliegue (su propio número de WhatsApp), ya que un número solo puede atender un perfil a la vez.
 
+### Mensajes enriquecidos
+
+Además de texto, el bot puede compartir ubicación nativa de WhatsApp y botones con enlace (`cta_url`), según lo que tenga configurado cada perfil. Estos recursos viven en un archivo JSON propio por perfil (`recursos_panaderia.json`, `recursos_camilo.json`) que funciona como **lista blanca**: coordenadas, dirección y enlaces aprobados, cada uno con una clave (por ejemplo `"mapa"`). Ese JSON se valida al arrancar (coordenadas en rango, URLs `https`, textos dentro de los límites de WhatsApp) y falla con un error claro si algo está mal, igual que `PERFIL_NEGOCIO`.
+
+La IA solo puede referirse a esos recursos por su clave, dentro del campo opcional `"adjuntos"` de su respuesta JSON — nunca puede inventar una URL, coordenada o clave. Si pide una clave que no existe en el perfil activo, ese adjunto se descarta y se registra en el log, pero la respuesta de texto se envía igual, sin fallar.
+
+Imágenes, botones de respuesta rápida y listas quedan para una fase posterior.
+
 ## Estructura del proyecto
 
 ```
@@ -120,9 +128,13 @@ BotWhatsApp/
 │   ├── openai_proveedor.py        # Placeholder para un futuro proveedor OpenAI
 │   └── __init__.py                # Función fábrica según PROVEEDOR_IA
 ├── cerebro.py                     # Prompt, contexto de fecha/festivos, validación de respuesta
+├── recursos.py                    # Valida el JSON de recursos (ubicación, enlaces) de cada perfil
+├── recursos_panaderia.json        # Lista blanca de recursos del perfil "panaderia"
+├── recursos_camilo.json           # Lista blanca de recursos del perfil "camilo"
 ├── simulador.py                   # REPL de consola para probar sin WhatsApp
 ├── webhook.py                     # Servidor Flask: verificación, firma, deduplicación, envío
-├── whatsapp.py                    # Envío de mensajes vía WhatsApp Cloud API
+├── whatsapp.py                    # Envío de mensajes de texto vía WhatsApp Cloud API
+├── mensajes_enriquecidos.py       # Envío de ubicación y botón con enlace (cta_url)
 ├── verificar_config.py            # Verifica que .env tenga las variables, sin exponer valores
 ├── verificar_suscripcion_waba.py  # Diagnóstico: apps suscritas a la cuenta de WhatsApp
 ├── suscribir_app_a_waba.py        # Suscribe esta app a la cuenta de WhatsApp
@@ -174,7 +186,7 @@ Configuración del lado de Meta (resumen, sin IDs ni valores reales):
 pytest
 ```
 
-El proyecto tiene **44 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial y la deduplicación.
+El proyecto tiene **79 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial y la deduplicación.
 
 ## Despliegue con Docker
 

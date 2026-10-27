@@ -1,0 +1,15 @@
+{
+  "ubicacion": {
+    "latitud": 4.735002,
+    "longitud": -74.263047,
+    "nombre": "Panadería San Roque (ubicación de ejemplo)",
+    "direccion": "Ubicación de ejemplo para demostración"
+  },
+  "enlaces": {
+    "mapa": {
+      "url": "https://www.google.com/maps?q=4.735002,-74.263047",
+      "texto_boton": "Ver en Google Maps",
+      "descripcion": "Así puede ver nuestra ubicación en el mapa."
+    }
+  }
+}

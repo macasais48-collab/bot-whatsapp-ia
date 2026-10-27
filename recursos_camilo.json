@@ -1,0 +1,14 @@
+{
+  "enlaces": {
+    "repositorio": {
+      "url": "https://github.com/macasais48-collab/bot-whatsapp-ia",
+      "texto_boton": "Ver el proyecto",
+      "descripcion": "Así puede revisar el código del proyecto en GitHub."
+    },
+    "linkedin": {
+      "url": "https://www.linkedin.com/in/camilo-uribe-gaona",
+      "texto_boton": "Ver LinkedIn",
+      "descripcion": "Así puede ver mi perfil profesional en LinkedIn."
+    }
+  }
+}

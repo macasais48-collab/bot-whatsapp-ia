@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -191,3 +192,140 @@ def test_cerebro_puede_cargar_el_perfil_de_camilo():
     assert "Ley 1581 de 2012" in sistema
     assert "¿Está de acuerdo?" in sistema
     assert "de a dos por mensaje" in sistema
+
+
+def test_negocio_no_menciona_bogota_como_sede():
+    # negocio.md tiene una sola fuente de verdad para la ubicación (coherente con
+    # recursos_panaderia.json, que está en Madrid, Cundinamarca). "Bogotá" no debe
+    # volver a aparecer como si fuera la sede del negocio (ver inconsistencia detectada
+    # en la prueba en vivo del 26/10/2026).
+    ruta_negocio = Path(__file__).parent.parent / "negocio.md"
+    contenido = ruta_negocio.read_text(encoding="utf-8")
+    assert "Bogotá" not in contenido
+
+
+def _escribir_recursos(tmp_path, datos):
+    ruta = tmp_path / "recursos.json"
+    ruta.write_text(json.dumps(datos), encoding="utf-8")
+    return ruta
+
+
+RECURSOS_DE_PRUEBA = {
+    "ubicacion": {
+        "latitud": 4.73,
+        "longitud": -74.26,
+        "nombre": "Negocio de ejemplo",
+        "direccion": "Calle falsa 123",
+    },
+    "enlaces": {
+        "mapa": {
+            "url": "https://maps.google.com/?q=4.73,-74.26",
+            "texto_boton": "Ver en el mapa",
+            "descripcion": "Así puedes ver nuestra ubicación.",
+        }
+    },
+}
+
+
+def test_sin_ruta_recursos_no_hay_adjuntos_aunque_la_ia_los_pida():
+    fake = FakeProveedor(
+        json.dumps({"respuesta": "ok", "derivar": False, "adjuntos": [{"tipo": "ubicacion"}]})
+    )
+    cerebro = Cerebro(fake, HistorialMemoria())
+
+    respuesta = cerebro.responder("conv1", "¿dónde quedan?")
+
+    assert respuesta.texto == "ok"
+    assert respuesta.adjuntos == []
+
+
+def test_un_json_sin_campo_adjuntos_no_rompe_nada():
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+    cerebro = Cerebro(fake, HistorialMemoria())
+
+    respuesta = cerebro.responder("conv1", "hola")
+
+    assert respuesta.adjuntos == []
+
+
+def test_el_prompt_describe_los_recursos_disponibles_del_perfil(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA)
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    cerebro.responder("conv1", "hola")
+
+    sistema, _ = fake.ultima_llamada
+    assert '"tipo": "ubicacion"' in sistema
+    assert '"tipo": "enlace", "clave": "mapa"' in sistema
+
+
+def test_adjunto_de_ubicacion_valido_se_resuelve_con_los_datos_del_perfil(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA)
+    fake = FakeProveedor(
+        json.dumps({"respuesta": "Quedamos aquí", "derivar": False, "adjuntos": [{"tipo": "ubicacion"}]})
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "¿dónde quedan?")
+
+    assert respuesta.texto == "Quedamos aquí"
+    assert respuesta.adjuntos == [{"tipo": "ubicacion", "datos": RECURSOS_DE_PRUEBA["ubicacion"]}]
+
+
+def test_adjunto_de_enlace_valido_se_resuelve_con_los_datos_del_perfil(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA)
+    fake = FakeProveedor(
+        json.dumps(
+            {"respuesta": "Aquí tienes", "derivar": False, "adjuntos": [{"tipo": "enlace", "clave": "mapa"}]}
+        )
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "¿tienen mapa?")
+
+    assert respuesta.adjuntos == [{"tipo": "enlace", "datos": RECURSOS_DE_PRUEBA["enlaces"]["mapa"]}]
+
+
+def test_una_clave_inventada_por_la_ia_nunca_se_envia_y_se_registra(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="cerebro")
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA)
+    fake = FakeProveedor(
+        json.dumps(
+            {
+                "respuesta": "Aquí tienes",
+                "derivar": False,
+                "adjuntos": [{"tipo": "enlace", "clave": "clave_que_no_existe"}],
+            }
+        )
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "¿tienen catálogo?")
+
+    # La respuesta de texto nunca se invalida por un adjunto inventado.
+    assert respuesta.texto == "Aquí tienes"
+    assert respuesta.adjuntos == []
+    mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
+    assert "clave_que_no_existe" in mensajes
+
+
+def test_un_tipo_de_adjunto_desconocido_se_descarta_sin_romper_la_respuesta(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA)
+    fake = FakeProveedor(
+        json.dumps({"respuesta": "ok", "derivar": False, "adjuntos": [{"tipo": "imagen", "clave": "algo"}]})
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "hola")
+
+    assert respuesta.texto == "ok"
+    assert respuesta.adjuntos == []
+
+
+def test_un_perfil_con_json_de_recursos_invalido_falla_al_arrancar(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, {"ubicacion": {"latitud": 999}})
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+
+    with pytest.raises(ValueError):
+        Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
