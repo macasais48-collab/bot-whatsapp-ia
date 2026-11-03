@@ -64,6 +64,31 @@ class EnviosCtaUrlFalsos:
         return True
 
 
+class EnviosImagenFalsos:
+    def __init__(self):
+        self.llamadas = []
+
+    def __call__(self, numero, media_id, caption=None):
+        self.llamadas.append((numero, media_id, caption))
+        return True
+
+
+class ObtencionMediaIdFalsa:
+    """Simula media_cache.obtener_media_id sin red real: devuelve un media id fijo
+    por clave, o None si la clave está en `claves_que_fallan` (subida fallida)."""
+
+    def __init__(self, media_id="media_de_prueba_123", claves_que_fallan=()):
+        self.media_id = media_id
+        self.claves_que_fallan = set(claves_que_fallan)
+        self.llamadas = []
+
+    def __call__(self, clave, ruta_archivo):
+        self.llamadas.append((clave, ruta_archivo))
+        if clave in self.claves_que_fallan:
+            return None
+        return self.media_id
+
+
 def _firmar(cuerpo: bytes) -> str:
     return "sha256=" + hmac.new(APP_SECRET.encode("utf-8"), cuerpo, hashlib.sha256).hexdigest()
 
@@ -156,13 +181,28 @@ def envios_cta_url():
 
 
 @pytest.fixture
-def fabrica_cliente(tmp_path, monkeypatch, envios, envios_ubicacion, envios_cta_url):
+def envios_imagen():
+    return EnviosImagenFalsos()
+
+
+@pytest.fixture
+def obtencion_media_id():
+    return ObtencionMediaIdFalsa()
+
+
+@pytest.fixture
+def fabrica_cliente(tmp_path, monkeypatch, envios, envios_ubicacion, envios_cta_url, envios_imagen, obtencion_media_id):
     monkeypatch.setenv("META_APP_SECRET", APP_SECRET)
     monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", VERIFY_TOKEN)
 
     contador = {"n": 0}
 
-    def _crear(salida_ia='{"respuesta": "ok", "derivar": false}', reloj=None, ruta_recursos=None):
+    def _crear(
+        salida_ia='{"respuesta": "ok", "derivar": false}',
+        reloj=None,
+        ruta_recursos=None,
+        obtener_media_id_fn=None,
+    ):
         contador["n"] += 1
         fake_proveedor = FakeProveedor(salida_ia)
         historial_dedup = HistorialSQLite(tmp_path / f"prueba_{contador['n']}.db")
@@ -173,6 +213,8 @@ def fabrica_cliente(tmp_path, monkeypatch, envios, envios_ubicacion, envios_cta_
             enviar_texto_fn=envios,
             enviar_ubicacion_fn=envios_ubicacion,
             enviar_cta_url_fn=envios_cta_url,
+            enviar_imagen_fn=envios_imagen,
+            obtener_media_id_fn=obtener_media_id_fn or obtencion_media_id,
             reloj=reloj or (lambda: RELOJ_PRUEBA_SEGUNDOS),
         )
         app.testing = True
@@ -466,6 +508,35 @@ def test_adjunto_de_enlace_valido_se_envia_despues_del_texto(fabrica_cliente, en
     ]
 
 
+def test_al_derivar_no_se_envia_ningun_adjunto_aunque_la_ia_los_pida(
+    fabrica_cliente, envios, envios_ubicacion, envios_cta_url, tmp_path, caplog
+):
+    caplog.set_level(logging.INFO, logger="webhook")
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps(
+            {
+                "respuesta": "no sé",
+                "derivar": True,
+                "adjuntos": [{"tipo": "ubicacion"}, {"tipo": "enlace", "clave": "mapa"}],
+            }
+        ),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "algo muy raro")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    # Al derivar se envía el mensaje fijo de derivación, nunca el texto de la IA
+    # ni los adjuntos que haya pedido.
+    assert envios.llamadas == [("573001112233", MENSAJE_DERIVACION_POR_DEFECTO)]
+    assert envios_ubicacion.llamadas == []
+    assert envios_cta_url.llamadas == []
+    mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
+    assert "2 adjunto" in mensajes
+
+
 def test_clave_de_adjunto_inventada_por_la_ia_nunca_se_envia(
     fabrica_cliente, envios, envios_ubicacion, envios_cta_url, tmp_path
 ):
@@ -489,3 +560,61 @@ def test_clave_de_adjunto_inventada_por_la_ia_nunca_se_envia(
     assert envios.llamadas == [("573001112233", "Aquí tienes")]
     assert envios_ubicacion.llamadas == []
     assert envios_cta_url.llamadas == []
+
+
+def _escribir_recursos_con_imagen_webhook(tmp_path):
+    ruta_imagen = tmp_path / "pan.jpg"
+    ruta_imagen.write_bytes(b"\xff\xd8\xff\xe0JFIF")
+    datos = {"imagenes": {"pan_del_dia": {"descripcion": "Foto del pan del día.", "archivo": "pan.jpg"}}}
+    ruta = tmp_path / "recursos_imagen.json"
+    ruta.write_text(json.dumps(datos), encoding="utf-8")
+    return ruta
+
+
+def test_adjunto_de_imagen_valido_se_envia_con_el_media_id_obtenido(
+    fabrica_cliente, envios, envios_imagen, obtencion_media_id, tmp_path
+):
+    ruta_recursos = _escribir_recursos_con_imagen_webhook(tmp_path)
+    cliente = fabrica_cliente(
+        json.dumps(
+            {
+                "respuesta": "Aquí tienes la foto",
+                "derivar": False,
+                "adjuntos": [{"tipo": "imagen", "clave": "pan_del_dia"}],
+            }
+        ),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "¿tienen fotos del pan?")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", "Aquí tienes la foto")]
+    assert obtencion_media_id.llamadas[0][0] == "pan_del_dia"
+    assert envios_imagen.llamadas == [("573001112233", "media_de_prueba_123", "Foto del pan del día.")]
+
+
+def test_si_falla_la_subida_de_la_imagen_el_texto_se_envia_igual(
+    fabrica_cliente, envios, envios_imagen, tmp_path
+):
+    ruta_recursos = _escribir_recursos_con_imagen_webhook(tmp_path)
+    media_id_fallido = ObtencionMediaIdFalsa(claves_que_fallan=("pan_del_dia",))
+    cliente = fabrica_cliente(
+        json.dumps(
+            {
+                "respuesta": "Aquí tienes la foto",
+                "derivar": False,
+                "adjuntos": [{"tipo": "imagen", "clave": "pan_del_dia"}],
+            }
+        ),
+        ruta_recursos=ruta_recursos,
+        obtener_media_id_fn=media_id_fallido,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "¿tienen fotos del pan?")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", "Aquí tienes la foto")]
+    assert envios_imagen.llamadas == []

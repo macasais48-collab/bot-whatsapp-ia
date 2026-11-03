@@ -106,9 +106,21 @@ Un valor distinto a estos dos hace que el bot **falle al arrancar** con un mensa
 
 Además de texto, el bot puede compartir ubicación nativa de WhatsApp y botones con enlace (`cta_url`), según lo que tenga configurado cada perfil. Estos recursos viven en un archivo JSON propio por perfil (`recursos_panaderia.json`, `recursos_camilo.json`) que funciona como **lista blanca**: coordenadas, dirección y enlaces aprobados, cada uno con una clave (por ejemplo `"mapa"`). Ese JSON se valida al arrancar (coordenadas en rango, URLs `https`, textos dentro de los límites de WhatsApp) y falla con un error claro si algo está mal, igual que `PERFIL_NEGOCIO`.
 
-La IA solo puede referirse a esos recursos por su clave, dentro del campo opcional `"adjuntos"` de su respuesta JSON — nunca puede inventar una URL, coordenada o clave. Si pide una clave que no existe en el perfil activo, ese adjunto se descarta y se registra en el log, pero la respuesta de texto se envía igual, sin fallar.
+La IA solo puede referirse a esos recursos por su clave, dentro del campo opcional `"adjuntos"` de su respuesta JSON — nunca puede inventar una URL, coordenada, clave o imagen. Si pide una clave que no existe en el perfil activo, ese adjunto se descarta y se registra en el log, pero la respuesta de texto se envía igual, sin fallar.
 
-Imágenes, botones de respuesta rápida y listas quedan para una fase posterior.
+Las imágenes también se validan al arrancar (archivo existente, formato JPEG/PNG, tamaño ≤5 MB) y se suben a Meta solo cuando hace falta: el `media id` resultante se guarda en un caché dentro del volumen de datos (no en el repositorio) con su fecha de subida, y se resube automáticamente cuando falta o tiene más de 25 días. Si la subida falla, se registra (tipo y código de error, nunca el token) y la respuesta de texto se envía igual.
+
+Botones de respuesta rápida y listas quedan para una fase posterior.
+
+### Créditos de fotos
+
+| Archivo | Crédito |
+| --- | --- |
+| `tortas2.jpg` | Foto de Unsplash (licencia Unsplash) |
+
+Estas son fotos de demostración, de uso libre, elegidas solo para mostrar la funcionalidad. En un despliegue real para un cliente, se reemplazan por fotos propias del negocio (su pan, sus tortas, su vitrina), definidas en su propio `recursos_<perfil>.json`.
+
+Claves de imagen propuestas para cuando el negocio tenga sus propias fotos: `pandebono`, `almojabana`, `pan_rollo` (o `pan_alinado`), `roscon`, `torta_chocolate` (en uso), `tres_leches`, `vitrina` y `pan_del_dia`.
 
 ## Estructura del proyecto
 
@@ -134,7 +146,8 @@ BotWhatsApp/
 ├── simulador.py                   # REPL de consola para probar sin WhatsApp
 ├── webhook.py                     # Servidor Flask: verificación, firma, deduplicación, envío
 ├── whatsapp.py                    # Envío de mensajes de texto vía WhatsApp Cloud API
-├── mensajes_enriquecidos.py       # Envío de ubicación y botón con enlace (cta_url)
+├── mensajes_enriquecidos.py       # Envío de ubicación, botón con enlace (cta_url) e imágenes
+├── media_cache.py                 # Sube imágenes a Meta y cachea su media id (vence a los 25 días)
 ├── verificar_config.py            # Verifica que .env tenga las variables, sin exponer valores
 ├── verificar_suscripcion_waba.py  # Diagnóstico: apps suscritas a la cuenta de WhatsApp
 ├── suscribir_app_a_waba.py        # Suscribe esta app a la cuenta de WhatsApp
@@ -186,7 +199,7 @@ Configuración del lado de Meta (resumen, sin IDs ni valores reales):
 pytest
 ```
 
-El proyecto tiene **79 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial y la deduplicación.
+El proyecto tiene **95 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial y la deduplicación.
 
 ## Despliegue con Docker
 

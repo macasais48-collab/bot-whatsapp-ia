@@ -329,3 +329,54 @@ def test_un_perfil_con_json_de_recursos_invalido_falla_al_arrancar(tmp_path):
 
     with pytest.raises(ValueError):
         Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+
+def _escribir_recursos_con_imagen(tmp_path):
+    ruta_imagen = tmp_path / "pan.jpg"
+    ruta_imagen.write_bytes(b"\xff\xd8\xff\xe0JFIF")
+    datos = {
+        "imagenes": {
+            "pan_del_dia": {"descripcion": "Foto del pan del día.", "archivo": "pan.jpg"},
+        }
+    }
+    return _escribir_recursos(tmp_path, datos)
+
+
+def test_adjunto_de_imagen_valido_se_resuelve_con_los_datos_del_perfil(tmp_path):
+    ruta_recursos = _escribir_recursos_con_imagen(tmp_path)
+    fake = FakeProveedor(
+        json.dumps(
+            {"respuesta": "Aquí tienes", "derivar": False, "adjuntos": [{"tipo": "imagen", "clave": "pan_del_dia"}]}
+        )
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "¿tienen fotos del pan?")
+
+    assert respuesta.texto == "Aquí tienes"
+    assert len(respuesta.adjuntos) == 1
+    assert respuesta.adjuntos[0]["tipo"] == "imagen"
+    assert respuesta.adjuntos[0]["datos"]["clave"] == "pan_del_dia"
+    assert respuesta.adjuntos[0]["datos"]["descripcion"] == "Foto del pan del día."
+
+
+def test_una_clave_de_imagen_inventada_por_la_ia_nunca_se_envia_y_se_registra(tmp_path, caplog):
+    caplog.set_level(logging.WARNING, logger="cerebro")
+    ruta_recursos = _escribir_recursos_con_imagen(tmp_path)
+    fake = FakeProveedor(
+        json.dumps(
+            {
+                "respuesta": "Aquí tienes",
+                "derivar": False,
+                "adjuntos": [{"tipo": "imagen", "clave": "catalogo_que_no_existe"}],
+            }
+        )
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "¿tienen catálogo de tortas?")
+
+    assert respuesta.texto == "Aquí tienes"
+    assert respuesta.adjuntos == []
+    mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
+    assert "catalogo_que_no_existe" in mensajes

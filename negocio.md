@@ -14,17 +14,22 @@ Negocio ficticio de demostración, usado únicamente como ejemplo para este bot 
 
 ## Productos y precios
 
-| Producto                  | Precio   |
-| -------------------------- | -------- |
-| Pan francés (unidad)       | $800     |
-| Pan de leche (unidad)      | $1.200   |
-| Croissant de mantequilla   | $3.500   |
-| Torta de chocolate (porción)| $5.000  |
-| Torta de chocolate (completa)| $45.000|
-| Empanada de pollo          | $3.000   |
-| Empanada de carne          | $3.200   |
-| Café americano             | $2.500   |
-| Jugo natural (vaso)        | $4.000   |
+| Producto                           | Precio   |
+| ----------------------------------- | -------- |
+| Pandebono (unidad)                  | $2.000   |
+| Almojábana (unidad)                 | $1.800   |
+| Pan rollo / pan aliñado (unidad)    | $1.500   |
+| Roscón (unidad)                     | $3.500   |
+| Torta de chocolate (porción)        | $6.000   |
+| Torta de chocolate (completa)       | $65.000  |
+| Torta de tres leches (porción)      | $7.000   |
+| Torta de tres leches (completa)     | $75.000  |
+| Café americano                      | $2.500   |
+| Jugo natural (vaso)                 | $4.000   |
+
+## Pan del día
+
+Todos los días horneamos pan fresco en la mañana. El pan del día siempre incluye pandebono, almojábana y pan rollo (pan aliñado); el resto de la selección puede variar un poco según el día.
 
 ## Domicilios
 
@@ -59,7 +64,7 @@ Negocio ficticio de demostración, usado únicamente como ejemplo para este bot 
    No, por el momento no contamos con esa línea de productos.
 
 6. **¿Hacen tortas por encargo para cumpleaños?**
-   No, por ahora solo vendemos la torta de chocolate disponible en el local, por porción o completa.
+   No, por ahora solo vendemos las tortas de chocolate y de tres leches disponibles en el local, por porción o completas.
 
 7. **¿Cuál es la dirección de la panadería?**
    Estamos en el centro de Madrid, Cundinamarca (ubicación de ejemplo). Con gusto le compartimos el mapa para que pueda ubicarnos.
@@ -72,3 +77,6 @@ Negocio ficticio de demostración, usado únicamente como ejemplo para este bot 
 
 10. **¿Atienden los días festivos?**
     No, los días festivos permanecemos cerrados.
+
+11. **¿Qué pan tienen hoy?**
+    El pan del día siempre incluye pandebono, almojábana y pan rollo (pan aliñado), recién horneados en la mañana. El resto de la selección puede variar un poco cada día.

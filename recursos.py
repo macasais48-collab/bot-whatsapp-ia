@@ -3,8 +3,14 @@ from pathlib import Path
 
 LIMITE_TEXTO_BOTON = 20
 LIMITE_DESCRIPCION_ENLACE = 1024
+TAMANO_MAXIMO_IMAGEN_BYTES = 5 * 1024 * 1024
+EXTENSIONES_IMAGEN_PERMITIDAS = {".jpg", ".jpeg", ".png"}
+FIRMAS_IMAGEN_PERMITIDAS = (
+    b"\xff\xd8\xff",  # JPEG
+    b"\x89PNG\r\n\x1a\n",  # PNG
+)
 
-CLAVES_RAIZ_PERMITIDAS = {"ubicacion", "enlaces"}
+CLAVES_RAIZ_PERMITIDAS = {"ubicacion", "enlaces", "imagenes"}
 
 
 def cargar_recursos(ruta: Path) -> dict:
@@ -28,6 +34,8 @@ def cargar_recursos(ruta: Path) -> dict:
         recursos["ubicacion"] = _validar_ubicacion(datos["ubicacion"], ruta.name)
     if "enlaces" in datos:
         recursos["enlaces"] = _validar_enlaces(datos["enlaces"], ruta.name)
+    if "imagenes" in datos:
+        recursos["imagenes"] = _validar_imagenes(datos["imagenes"], ruta.name, ruta.parent)
     return recursos
 
 
@@ -89,5 +97,52 @@ def _validar_enlaces(enlaces, nombre_archivo: str) -> dict:
             )
 
         resultado[clave] = {"url": url, "texto_boton": texto_boton, "descripcion": descripcion}
+
+    return resultado
+
+
+def _validar_imagenes(imagenes, nombre_archivo: str, directorio_base: Path) -> dict:
+    if not isinstance(imagenes, dict):
+        raise ValueError(f"{nombre_archivo}: 'imagenes' debe ser un objeto.")
+
+    resultado = {}
+    for clave, imagen in imagenes.items():
+        if not isinstance(imagen, dict):
+            raise ValueError(f"{nombre_archivo}: 'imagenes.{clave}' debe ser un objeto.")
+
+        descripcion = imagen.get("descripcion")
+        if not isinstance(descripcion, str) or not (1 <= len(descripcion) <= LIMITE_DESCRIPCION_ENLACE):
+            raise ValueError(
+                f"{nombre_archivo}: 'imagenes.{clave}.descripcion' debe tener entre 1 y "
+                f"{LIMITE_DESCRIPCION_ENLACE} caracteres."
+            )
+
+        archivo = imagen.get("archivo")
+        if not isinstance(archivo, str) or not archivo.strip():
+            raise ValueError(f"{nombre_archivo}: 'imagenes.{clave}.archivo' debe ser una ruta no vacía.")
+
+        ruta_archivo = (directorio_base / archivo).resolve()
+        if ruta_archivo.suffix.lower() not in EXTENSIONES_IMAGEN_PERMITIDAS:
+            raise ValueError(
+                f"{nombre_archivo}: 'imagenes.{clave}.archivo' debe ser .jpg, .jpeg o .png."
+            )
+        if not ruta_archivo.is_file():
+            raise ValueError(f"{nombre_archivo}: 'imagenes.{clave}.archivo' no existe: {archivo}.")
+
+        tamano = ruta_archivo.stat().st_size
+        if tamano > TAMANO_MAXIMO_IMAGEN_BYTES:
+            raise ValueError(
+                f"{nombre_archivo}: 'imagenes.{clave}.archivo' pesa {tamano} bytes y supera "
+                f"el máximo de {TAMANO_MAXIMO_IMAGEN_BYTES} bytes (5 MB) de WhatsApp."
+            )
+
+        with ruta_archivo.open("rb") as archivo_abierto:
+            encabezado = archivo_abierto.read(8)
+        if not any(encabezado.startswith(firma) for firma in FIRMAS_IMAGEN_PERMITIDAS):
+            raise ValueError(
+                f"{nombre_archivo}: 'imagenes.{clave}.archivo' no es un JPEG ni PNG válido."
+            )
+
+        resultado[clave] = {"clave": clave, "descripcion": descripcion, "archivo": ruta_archivo}
 
     return resultado

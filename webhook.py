@@ -10,7 +10,8 @@ from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
 from env import obtener_env
 from llm import crear_proveedor_ia
-from mensajes_enriquecidos import enviar_cta_url, enviar_ubicacion
+from media_cache import obtener_media_id
+from mensajes_enriquecidos import enviar_cta_url, enviar_imagen, enviar_ubicacion
 from whatsapp import enviar_texto
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,8 @@ def crear_app(
     enviar_texto_fn=enviar_texto,
     enviar_ubicacion_fn=enviar_ubicacion,
     enviar_cta_url_fn=enviar_cta_url,
+    enviar_imagen_fn=enviar_imagen,
+    obtener_media_id_fn=obtener_media_id,
     mensaje_derivacion: str | None = None,
     reloj=time.time,
 ) -> Flask:
@@ -163,11 +166,19 @@ def crear_app(
         if respuesta.derivar:
             logger.info("Conversación derivada a una persona (remitente=%s)", numero_enmascarado)
             enviar_texto_fn(numero_remitente, mensaje_derivacion)
+            if respuesta.adjuntos:
+                # Al derivar, el texto que se envía es el mensaje fijo de derivación,
+                # no el de la IA: enviar un adjunto sin ese contexto sería confuso o
+                # contradictorio (p. ej. una foto sin ninguna frase que la anuncie).
+                logger.info(
+                    "%d adjunto(s) descartado(s) por derivación (remitente=%s)",
+                    len(respuesta.adjuntos),
+                    numero_enmascarado,
+                )
         else:
             enviar_texto_fn(numero_remitente, respuesta.texto)
-
-        for adjunto in respuesta.adjuntos:
-            _enviar_adjunto(numero_remitente, adjunto)
+            for adjunto in respuesta.adjuntos:
+                _enviar_adjunto(numero_remitente, adjunto)
 
     def _enviar_adjunto(numero: str, adjunto: dict) -> None:
         # cerebro.py ya validó el adjunto contra los recursos del perfil: aquí solo
@@ -178,6 +189,10 @@ def crear_app(
             enviar_ubicacion_fn(numero, datos["latitud"], datos["longitud"], datos["nombre"], datos["direccion"])
         elif tipo == "enlace":
             enviar_cta_url_fn(numero, datos["descripcion"], datos["texto_boton"], datos["url"])
+        elif tipo == "imagen":
+            media_id = obtener_media_id_fn(datos["clave"], datos["archivo"])
+            if media_id is not None:
+                enviar_imagen_fn(numero, media_id, caption=datos["descripcion"])
 
     @app.route("/salud", methods=["GET"])
     def salud():

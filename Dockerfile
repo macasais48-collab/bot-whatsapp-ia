@@ -17,6 +17,7 @@ COPY --chown=appuser:appuser \
     cerebro.py \
     env.py \
     historial.py \
+    media_cache.py \
     mensajes_enriquecidos.py \
     negocio.md \
     perfil_camilo.md \
@@ -27,6 +28,7 @@ COPY --chown=appuser:appuser \
     whatsapp.py \
     ./
 COPY --chown=appuser:appuser llm/ ./llm/
+COPY --chown=appuser:appuser recursos/demo/ ./recursos/demo/
 
 VOLUME ["/app/datos"]
 

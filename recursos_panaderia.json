@@ -11,5 +11,11 @@
       "texto_boton": "Ver en Google Maps",
       "descripcion": "Así puede ver nuestra ubicación en el mapa."
     }
+  },
+  "imagenes": {
+    "torta_chocolate": {
+      "descripcion": "Así se ve una porción de nuestra torta de chocolate.",
+      "archivo": "recursos/demo/tortas2.jpg"
+    }
   }
 }

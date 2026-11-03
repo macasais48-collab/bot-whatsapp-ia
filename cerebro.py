@@ -119,12 +119,16 @@ class Cerebro:
             "Responde SIEMPRE y SOLO con un objeto JSON válido, sin texto adicional "
             "antes ni después, con exactamente esta forma:\n"
             '{"respuesta": "<tu respuesta en español>", "derivar": true o false, '
-            '"adjuntos": [<opcional: objetos como {"tipo": "ubicacion"} o '
-            '{"tipo": "enlace", "clave": "<clave>"}>]}\n\n'
+            '"adjuntos": [<opcional: objetos como {"tipo": "ubicacion"}, '
+            '{"tipo": "enlace", "clave": "<clave>"} o {"tipo": "imagen", "clave": "<clave>"}>]}\n\n'
             "El campo 'adjuntos' es opcional: inclúyelo solo con las claves listadas en "
             "'Recursos disponibles' más abajo, cuando le sirvan al cliente. Nunca inventes "
             "una clave, URL o coordenada que no esté en esa lista. Si no hace falta ningún "
-            "adjunto, omite el campo o deja la lista vacía.\n\n"
+            "adjunto, omite el campo o deja la lista vacía. Si incluyes un adjunto, el texto "
+            "de 'respuesta' debe anunciarlo como algo que ya se está enviando (por ejemplo "
+            "'Le comparto una foto...' o 'Le comparto la ubicación...'), nunca preguntar si "
+            "lo quiere ver — eso sería contradictorio, porque el adjunto se envía de todas "
+            "formas en el mismo momento.\n\n"
             "Información del negocio:\n"
             f"{info_negocio}"
         )
@@ -143,6 +147,10 @@ class Cerebro:
             lineas.append(
                 f'- {{"tipo": "enlace", "clave": "{clave}"}}: botón "{enlace["texto_boton"]}".'
             )
+        for clave, imagen in self._recursos.get("imagenes", {}).items():
+            lineas.append(
+                f'- {{"tipo": "imagen", "clave": "{clave}"}}: {imagen["descripcion"]}'
+            )
         return "\n".join(lineas)
 
     def _resolver_adjunto(self, item: dict) -> dict | None:
@@ -156,6 +164,11 @@ class Cerebro:
             enlace = self._recursos.get("enlaces", {}).get(item.get("clave"))
             if enlace is not None:
                 return {"tipo": "enlace", "datos": enlace}
+            return None
+        if tipo == "imagen":
+            imagen = self._recursos.get("imagenes", {}).get(item.get("clave"))
+            if imagen is not None:
+                return {"tipo": "imagen", "datos": imagen}
             return None
         return None
 

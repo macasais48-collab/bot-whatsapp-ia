@@ -73,6 +73,20 @@ def enviar_ubicacion(numero: str, latitud: float, longitud: float, nombre: str, 
     return _enviar(cuerpo)
 
 
+def enviar_imagen(numero: str, media_id: str, caption: str | None = None) -> bool:
+    imagen: dict = {"id": media_id}
+    if caption:
+        imagen["caption"] = caption
+    cuerpo = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": numero,
+        "type": "image",
+        "image": imagen,
+    }
+    return _enviar(cuerpo)
+
+
 def enviar_cta_url(numero: str, texto_cuerpo: str, texto_boton: str, url: str) -> bool:
     cuerpo = {
         "messaging_product": "whatsapp",
