@@ -16,16 +16,20 @@ COPY --chown=appuser:appuser \
     almacenamiento.py \
     cerebro.py \
     env.py \
+    flujo_pedido.py \
+    gunicorn.conf.py \
     historial.py \
     media_cache.py \
     mensajes_enriquecidos.py \
     negocio.md \
+    pedidos.py \
     perfil_camilo.md \
     perfil_tamales.md \
     recursos.py \
     recursos_camilo.json \
     recursos_panaderia.json \
     recursos_tamales.json \
+    telefono.py \
     webhook.py \
     whatsapp.py \
     ./
@@ -41,4 +45,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/salud', timeout=3)"
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--worker-class", "gthread", "--workers", "1", "--threads", "4", "--worker-tmp-dir", "/tmp", "--no-control-socket", "webhook:crear_app()"]
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "--bind", "0.0.0.0:8000", "--worker-class", "gthread", "--workers", "1", "--threads", "4", "--worker-tmp-dir", "/tmp", "--no-control-socket", "webhook:crear_app()"]

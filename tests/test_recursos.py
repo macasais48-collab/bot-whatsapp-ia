@@ -258,7 +258,7 @@ def test_carga_un_domicilio_valido_con_pedido_minimo(tmp_path):
         {
             "domicilio": {
                 "pedido_minimo": 15000,
-                "centro": {"costo": 3000, "tiempo_estimado": "20-30 minutos"},
+                "centro": {"nombre": "Centro", "costo": 3000, "tiempo_estimado": "20-30 minutos"},
             }
         },
     )
@@ -266,14 +266,18 @@ def test_carga_un_domicilio_valido_con_pedido_minimo(tmp_path):
     recursos = cargar_recursos(ruta)
 
     assert recursos["domicilio"]["pedido_minimo"] == 15000
-    assert recursos["domicilio"]["centro"] == {"costo": 3000, "tiempo_estimado": "20-30 minutos"}
+    assert recursos["domicilio"]["centro"] == {
+        "nombre": "Centro",
+        "costo": 3000,
+        "tiempo_estimado": "20-30 minutos",
+    }
 
 
 def test_carga_un_domicilio_valido_sin_pedido_minimo(tmp_path):
     ruta = _escribir(
         tmp_path,
         "recursos.json",
-        {"domicilio": {"centro": {"costo": 3000, "tiempo_estimado": "20-30 minutos"}}},
+        {"domicilio": {"centro": {"nombre": "Centro", "costo": 3000, "tiempo_estimado": "20-30 minutos"}}},
     )
 
     recursos = cargar_recursos(ruta)
@@ -284,10 +288,12 @@ def test_carga_un_domicilio_valido_sin_pedido_minimo(tmp_path):
 @pytest.mark.parametrize(
     "zona_invalida,fragmento_error",
     [
-        ({"costo": -1, "tiempo_estimado": "20-30 minutos"}, "costo"),
-        ({"costo": 3000.5, "tiempo_estimado": "20-30 minutos"}, "costo"),
-        ({"costo": "3000", "tiempo_estimado": "20-30 minutos"}, "costo"),
-        ({"costo": 3000, "tiempo_estimado": ""}, "tiempo_estimado"),
+        ({"nombre": "Centro", "costo": -1, "tiempo_estimado": "20-30 minutos"}, "costo"),
+        ({"nombre": "Centro", "costo": 3000.5, "tiempo_estimado": "20-30 minutos"}, "costo"),
+        ({"nombre": "Centro", "costo": "3000", "tiempo_estimado": "20-30 minutos"}, "costo"),
+        ({"nombre": "Centro", "costo": 3000, "tiempo_estimado": ""}, "tiempo_estimado"),
+        ({"nombre": "", "costo": 3000, "tiempo_estimado": "20-30 minutos"}, "nombre"),
+        ({"nombre": "N" * 25, "costo": 3000, "tiempo_estimado": "20-30 minutos"}, "nombre"),
     ],
 )
 def test_falla_con_zona_de_domicilio_invalida(tmp_path, zona_invalida, fragmento_error):

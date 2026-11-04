@@ -28,6 +28,27 @@ def test_dockerfile_copia_todos_los_archivos_de_recursos_de_negocio():
         )
 
 
+def test_dockerfile_copia_los_modulos_de_la_toma_de_pedidos():
+    ruta_dockerfile = Path(__file__).parent.parent / "Dockerfile"
+    contenido = ruta_dockerfile.read_text(encoding="utf-8")
+
+    for nombre_archivo in ("pedidos.py", "flujo_pedido.py", "telefono.py", "gunicorn.conf.py"):
+        assert nombre_archivo in contenido, (
+            f"{nombre_archivo} no aparece en el Dockerfile: agrégalo a la línea COPY para que no "
+            "falte dentro de la imagen (mismo tipo de error que con perfil_camilo.md el 21/10/2026)."
+        )
+
+
+def test_dockerfile_usa_el_config_de_gunicorn_para_el_logging():
+    ruta_dockerfile = Path(__file__).parent.parent / "Dockerfile"
+    contenido = ruta_dockerfile.read_text(encoding="utf-8")
+
+    assert "--config" in contenido and "gunicorn.conf.py" in contenido, (
+        "El CMD de gunicorn debe cargar gunicorn.conf.py (--config) para que el logging de la "
+        "aplicación (webhook.py, flujo_pedido.py) quede configurado bajo gunicorn."
+    )
+
+
 def test_dockerfile_copia_las_carpetas_de_imagenes_de_los_recursos():
     raiz_proyecto = Path(__file__).parent.parent
     ruta_dockerfile = raiz_proyecto / "Dockerfile"

@@ -111,7 +111,17 @@ La IA solo puede referirse a esos recursos por su clave, dentro del campo opcion
 
 Las imágenes también se validan al arrancar (archivo existente, formato JPEG/PNG, tamaño ≤5 MB) y se suben a Meta solo cuando hace falta: el `media id` resultante se guarda en un caché dentro del volumen de datos (no en el repositorio) con su fecha de subida, y se resube automáticamente cuando falta o tiene más de 25 días. Si la subida falla, se registra (tipo y código de error, nunca el token) y la respuesta de texto se envía igual.
 
-Botones de respuesta rápida y listas quedan para una fase posterior. El perfil `tamales` ya incluye dos secciones adicionales en su `recursos_<perfil>.json` que esa fase usará — `"catalogo"` (productos con precio y unidad) y `"domicilio"` (zonas con costo y tiempo estimado) — validadas igual que el resto de la lista blanca, pero sin ningún código todavía que las use para tomar pedidos: por ahora el bot solo las puede mencionar en texto libre a través del perfil, nunca calcula nada con ellas.
+El bot también puede enviar botones de respuesta rápida (hasta 3) y listas (hasta 10 filas), con los mismos límites de WhatsApp verificados contra su documentación oficial. Un conjunto de botones (`"botones"` en `recursos_<perfil>.json`) es lista blanca igual que el resto: la IA solo puede pedir `{"tipo": "botones", "clave": "<clave>"}`. El menú (`{"tipo": "menu"}`) es distinto: se arma **por código**, directamente desde `"catalogo"`, así que la IA nunca decide qué productos o precios aparecen ahí.
+
+### Toma de pedidos
+
+Cuando el cliente elige un producto del menú (o toca el botón "Hacer pedido"), la conversación entra a un **modo de pedido determinista**: a partir de ahí, cada mensaje lo maneja `flujo_pedido.py` por código — `cerebro.py` (la IA) deja de participar por completo hasta que el pedido se confirma, se cancela o se agota el tiempo. Esto es intencional: un pedido con dinero de por medio no puede depender de que la IA calcule ni redondee nada.
+
+El flujo cubre, en orden: elegir productos (con botones "Agregar otro"/"Continuar" para pedir varios) → tipo de entrega (domicilio o recoger en el local). Si es domicilio: valida el pedido mínimo, **solo entonces** pide el consentimiento de datos (Ley 1581) — recoger en el local nunca lo pide, porque no hace falta guardar ninguna dirección — y si el cliente no acepta, no cancela: ofrece `[Recoger en el local] [Cancelar]` en su lugar. Si acepta, sigue con la zona (de una lista) y la dirección (por texto o compartiendo la ubicación). El resumen y el mensaje final de confirmación muestran la zona y la dirección exactas (o "ubicación compartida por WhatsApp" si el cliente compartió su ubicación en vez de escribirla), con el total **siempre calculado desde `"catalogo"` y `"domicilio"`**. También maneja salidas en cualquier punto: palabras clave para cancelar o pedir una persona (sin distinguir mayúsculas ni tildes), 30 minutos sin respuesta cancelan el pedido en construcción, y ante una entrada que no se reconoce reenvía el mismo paso (los mismos botones, la misma lista o el mismo resumen) en vez de un mensaje genérico, para que el cliente no pierda lo ya elegido.
+
+Los pedidos se guardan en la misma base SQLite (`pedidos.py`, tablas `pedidos` y `pedido_items`), con un número de pedido autoincremental y un solo pedido en construcción por número de cliente. El pago y su confirmación son una fase posterior (sub-fase 4): por ahora el pedido queda en estado `"recibido"`.
+
+**Logging bajo gunicorn:** `gunicorn.conf.py` (cargado con `--config` desde el `CMD` del Dockerfile) configura el logging en cada worker (`post_fork`) y el log de accesos de gunicorn, para que los eventos de `webhook.py` y `flujo_pedido.py` (p. ej. "Pedido #7 confirmado", "mensaje antiguo ignorado") se vean con `docker compose logs`. El log de accesos nunca incluye la cadena de consulta (el verify token de Meta viaja ahí) y los eventos de la aplicación nunca incluyen el número de teléfono completo (solo los últimos 4 dígitos, vía `telefono.py`), el texto de los mensajes, direcciones ni ubicaciones — solo el hecho de que algo pasó.
 
 ### Créditos de fotos
 
@@ -152,8 +162,12 @@ BotWhatsApp/
 ├── simulador.py                   # REPL de consola para probar sin WhatsApp
 ├── webhook.py                     # Servidor Flask: verificación, firma, deduplicación, envío
 ├── whatsapp.py                    # Envío de mensajes de texto vía WhatsApp Cloud API
-├── mensajes_enriquecidos.py       # Envío de ubicación, botón con enlace (cta_url) e imágenes
+├── mensajes_enriquecidos.py       # Envío de ubicación, botón con enlace (cta_url), imágenes, botones y listas
 ├── media_cache.py                 # Sube imágenes a Meta y cachea su media id (vence a los 25 días)
+├── pedidos.py                     # Persistencia de pedidos en SQLite (tablas pedidos y pedido_items)
+├── flujo_pedido.py                # Máquina de estados de la toma de pedidos (sin IA, sin Flask)
+├── telefono.py                    # Enmascarado de número de teléfono (compartido por webhook y flujo_pedido)
+├── gunicorn.conf.py                # Logging de gunicorn (stdout, sin query string en el log de accesos)
 ├── verificar_config.py            # Verifica que .env tenga las variables, sin exponer valores
 ├── verificar_suscripcion_waba.py  # Diagnóstico: apps suscritas a la cuenta de WhatsApp
 ├── suscribir_app_a_waba.py        # Suscribe esta app a la cuenta de WhatsApp
@@ -205,7 +219,7 @@ Configuración del lado de Meta (resumen, sin IDs ni valores reales):
 pytest
 ```
 
-El proyecto tiene **111 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial y la deduplicación.
+El proyecto tiene **185 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial, la deduplicación y los pedidos.
 
 ## Despliegue con Docker
 

@@ -9,6 +9,7 @@ from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
 from historial import HistorialMemoria
 from llm.base import ProveedorIA
+from pedidos import Pedidos
 from recursos import LIMITE_CUERPO_INTERACTIVO, cargar_recursos
 from webhook import (
     BOTONES_TEXTO_CUERPO_POR_DEFECTO,
@@ -269,11 +270,14 @@ def fabrica_cliente(
         reloj=None,
         ruta_recursos=None,
         obtener_media_id_fn=None,
+        pedidos=None,
+        cerebro=None,
     ):
         contador["n"] += 1
-        fake_proveedor = FakeProveedor(salida_ia)
         historial_dedup = HistorialSQLite(tmp_path / f"prueba_{contador['n']}.db")
-        cerebro = Cerebro(fake_proveedor, HistorialMemoria(), ruta_recursos=ruta_recursos)
+        if cerebro is None:
+            fake_proveedor = FakeProveedor(salida_ia)
+            cerebro = Cerebro(fake_proveedor, HistorialMemoria(), ruta_recursos=ruta_recursos)
         recursos = cargar_recursos(ruta_recursos) if ruta_recursos is not None else {}
         app = crear_app(
             cerebro=cerebro,
@@ -286,6 +290,7 @@ def fabrica_cliente(
             enviar_lista_fn=envios_lista,
             obtener_media_id_fn=obtener_media_id_fn or obtencion_media_id,
             recursos=recursos,
+            pedidos=pedidos or Pedidos(tmp_path / f"pedidos_{contador['n']}.db"),
             reloj=reloj or (lambda: RELOJ_PRUEBA_SEGUNDOS),
         )
         app.testing = True
@@ -720,9 +725,12 @@ def test_boton_entrante_valido_se_traduce_a_texto_y_sigue_el_flujo_normal(
     assert envios.llamadas == [("573001112233", "Vendemos tamales")]
 
 
-def test_fila_de_lista_entrante_valida_se_traduce_al_nombre_del_producto(
+def test_elegir_un_producto_de_la_lista_inicia_el_pedido_en_vez_de_llamar_a_la_ia(
     fabrica_cliente, envios, tmp_path
 ):
+    # Desde la sub-fase 3, elegir un producto del menú ya no se traduce a texto
+    # para la IA: inicia el flujo de pedido (determinista, por código) y nunca
+    # llega a cerebro.responder (ver test_pedido_en_construccion_nunca_llama_a_cerebro).
     ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
     cliente = fabrica_cliente(
         json.dumps({"respuesta": "Buena elección", "derivar": False}),
@@ -733,7 +741,7 @@ def test_fila_de_lista_entrante_valida_se_traduce_al_nombre_del_producto(
     respuesta = _post_con_firma(cliente, payload)
 
     assert respuesta.status_code == 200
-    assert envios.llamadas == [("573001112233", "Buena elección")]
+    assert envios.llamadas == [("573001112233", '¿Cuántas unidades de "Tamal sencillo" desea (1 a 50)?')]
 
 
 def test_boton_entrante_con_id_desconocido_se_ignora(fabrica_cliente, envios, tmp_path, caplog):
@@ -887,3 +895,185 @@ def test_clave_de_botones_inventada_por_la_ia_nunca_se_envia(
     assert respuesta.status_code == 200
     assert envios.llamadas == [("573001112233", "Hola")]
     assert envios_botones.llamadas == []
+
+
+RECURSOS_DE_PRUEBA_PEDIDO_WEBHOOK = {
+    "catalogo": {
+        "tamal_sencillo": {"nombre": "Tamal sencillo", "precio": 8000, "unidad": "unidad"},
+        "bebida": {"nombre": "Bebida", "precio": 3000, "unidad": "unidad"},
+    },
+    "domicilio": {
+        "pedido_minimo": 15000,
+        "centro": {"nombre": "Centro", "costo": 3000, "tiempo_estimado": "20-30 minutos"},
+    },
+    "botones": {
+        "bienvenida": {
+            "descripcion": "¿En qué le ayudo?",
+            "opciones": [
+                {"id": "ver_menu", "titulo": "Ver menú", "equivale_a": "¿Qué venden?"},
+                {"id": "hacer_pedido", "titulo": "Hacer pedido", "equivale_a": "Quiero hacer un pedido"},
+            ],
+        }
+    },
+}
+
+
+class CerebroQueFalla:
+    def __init__(self):
+        self.llamadas = 0
+
+    def responder(self, id_conversacion, texto):
+        self.llamadas += 1
+        raise AssertionError("cerebro.responder no debía llamarse con un pedido en construcción")
+
+
+def test_elegir_producto_de_la_lista_inicia_el_pedido_y_confirmar_lo_deja_recibido(
+    fabrica_cliente, envios, envios_botones, envios_lista, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_PEDIDO_WEBHOOK)
+    cliente = fabrica_cliente(ruta_recursos=ruta_recursos)
+    numero = "573001112233"
+
+    _post_con_firma(cliente, _payload_mensaje_lista("wamid.1", numero, "tamal_sencillo"))
+    assert envios.llamadas[-1] == (numero, '¿Cuántas unidades de "Tamal sencillo" desea (1 a 50)?')
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.2", numero, "1"))
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.3", numero, "continuar"))
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.4", numero, "acepto_datos"))
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.5", numero, "recoger_local"))
+    respuesta = _post_con_firma(cliente, _payload_mensaje_boton("wamid.6", numero, "confirmar"))
+
+    assert respuesta.status_code == 200
+    assert "Pedido #" in envios.llamadas[-1][1]
+    assert "recibido" in envios.llamadas[-1][1]
+
+
+def test_boton_hacer_pedido_en_la_bienvenida_inicia_el_pedido_y_muestra_el_menu(
+    fabrica_cliente, envios, envios_lista, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_PEDIDO_WEBHOOK)
+    cliente = fabrica_cliente(ruta_recursos=ruta_recursos)
+    numero = "573001112233"
+
+    respuesta = _post_con_firma(cliente, _payload_mensaje_boton("wamid.1", numero, "hacer_pedido"))
+
+    assert respuesta.status_code == 200
+    assert len(envios_lista.llamadas) == 1
+    filas = envios_lista.llamadas[0][3][0]["filas"]
+    assert {fila["id"] for fila in filas} == {"tamal_sencillo", "bebida"}
+
+
+def test_mientras_hay_pedido_en_construccion_cerebro_responder_nunca_se_llama(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_APP_SECRET", APP_SECRET)
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", VERIFY_TOKEN)
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_PEDIDO_WEBHOOK)
+    recursos = cargar_recursos(ruta_recursos)
+    envios_texto = EnviosFalsos()
+    envios_botones_fake = EnviosBotonesFalsos()
+    cerebro_que_falla = CerebroQueFalla()
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero = "573001112233"
+    id_pedido = pedidos.crear_en_construccion(numero, "tamales", ahora=RELOJ_PRUEBA_SEGUNDOS)
+    pedidos.fijar_producto_pendiente(id_pedido, "tamal_sencillo", ahora=RELOJ_PRUEBA_SEGUNDOS)
+
+    app = crear_app(
+        cerebro=cerebro_que_falla,
+        historial_dedup=HistorialSQLite(tmp_path / "historial.db"),
+        enviar_texto_fn=envios_texto,
+        enviar_botones_fn=envios_botones_fake,
+        recursos=recursos,
+        pedidos=pedidos,
+        reloj=lambda: RELOJ_PRUEBA_SEGUNDOS,
+    )
+    cliente = app.test_client()
+
+    # Un mensaje que no es una cantidad válida para el paso "cantidad" en el
+    # que está este pedido: debe resolverse por completo dentro del flujo de
+    # pedido (repreguntando la cantidad), sin tocar cerebro.responder.
+    respuesta = _post_con_firma(cliente, _payload_mensaje_texto("wamid.1", numero, "no es un número"))
+
+    assert respuesta.status_code == 200
+    assert cerebro_que_falla.llamadas == 0
+    assert envios_texto.llamadas == [
+        (numero, 'Escriba solo el número de unidades, por ejemplo: 3 (entre 1 y 50), para "Tamal sencillo".')
+    ]
+    assert envios_botones_fake.llamadas == []
+
+
+def test_un_numero_con_pedido_y_otro_en_conversacion_normal_no_se_mezclan(
+    fabrica_cliente, envios, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_PEDIDO_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps({"respuesta": "Abrimos a las 7am", "derivar": False}),
+        ruta_recursos=ruta_recursos,
+    )
+    numero_pedido = "573001112233"
+    numero_normal = "573009998877"
+
+    _post_con_firma(cliente, _payload_mensaje_lista("wamid.1", numero_pedido, "tamal_sencillo"))
+    respuesta = _post_con_firma(cliente, _payload_mensaje_texto("wamid.2", numero_normal, "¿a qué hora abren?"))
+
+    assert respuesta.status_code == 200
+    llamadas_normal = [llamada for llamada in envios.llamadas if llamada[0] == numero_normal]
+    llamadas_pedido = [llamada for llamada in envios.llamadas if llamada[0] == numero_pedido]
+    assert llamadas_normal == [(numero_normal, "Abrimos a las 7am")]
+    assert llamadas_pedido == [(numero_pedido, '¿Cuántas unidades de "Tamal sencillo" desea (1 a 50)?')]
+
+
+def test_un_segundo_intento_de_iniciar_pedido_no_crea_uno_nuevo_mientras_el_primero_sigue_en_construccion(
+    fabrica_cliente, envios, envios_lista, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_PEDIDO_WEBHOOK)
+    pedidos = Pedidos(tmp_path / "pedidos_unicos.db")
+    cliente = fabrica_cliente(ruta_recursos=ruta_recursos, pedidos=pedidos)
+    numero = "573001112233"
+
+    _post_con_firma(cliente, _payload_mensaje_lista("wamid.1", numero, "tamal_sencillo"))
+    id_primero = pedidos.obtener_en_construccion(numero)["id"]
+
+    # Mientras ese pedido sigue en construcción, tocar "Hacer pedido" otra vez
+    # no debe crear un segundo pedido: el mensaje se entrega al mismo pedido
+    # en curso (en el paso "cantidad", así que esto cuenta como entrada no
+    # reconocida, no como un nuevo inicio).
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.2", numero, "hacer_pedido"))
+
+    pedido_actual = pedidos.obtener_en_construccion(numero)
+    assert pedido_actual["id"] == id_primero
+
+
+def test_texto_no_reconocido_en_pedido_tampoco_llama_a_cerebro_responder(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_APP_SECRET", APP_SECRET)
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", VERIFY_TOKEN)
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_PEDIDO_WEBHOOK)
+    recursos = cargar_recursos(ruta_recursos)
+    envios_texto = EnviosFalsos()
+    envios_botones_fake = EnviosBotonesFalsos()
+    cerebro_que_falla = CerebroQueFalla()
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero = "573001112233"
+    id_pedido = pedidos.crear_en_construccion(numero, "tamales", ahora=RELOJ_PRUEBA_SEGUNDOS)
+    pedidos.agregar_item(id_pedido, "tamal_sencillo", "Tamal sencillo", 8000, 1, ahora=RELOJ_PRUEBA_SEGUNDOS)
+    pedidos.fijar_paso(id_pedido, "entrega", ahora=RELOJ_PRUEBA_SEGUNDOS)
+
+    app = crear_app(
+        cerebro=cerebro_que_falla,
+        historial_dedup=HistorialSQLite(tmp_path / "historial.db"),
+        enviar_texto_fn=envios_texto,
+        enviar_botones_fn=envios_botones_fake,
+        recursos=recursos,
+        pedidos=pedidos,
+        reloj=lambda: RELOJ_PRUEBA_SEGUNDOS,
+    )
+    cliente = app.test_client()
+
+    respuesta = _post_con_firma(
+        cliente, _payload_mensaje_texto("wamid.1", numero, "¿cuánto se demora el domicilio?")
+    )
+
+    assert respuesta.status_code == 200
+    assert cerebro_que_falla.llamadas == 0
+    assert "No entendí esa respuesta" in envios_texto.llamadas[-1][1]
+    # Se reenvía el mismo paso ("entrega"), con sus mismos dos botones.
+    assert envios_botones_fake.llamadas[-1][1] == "¿Cómo desea recibir su pedido?"
+    assert {b["id"] for b in envios_botones_fake.llamadas[-1][2]} == {"domicilio", "recoger_local"}

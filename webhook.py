@@ -9,6 +9,7 @@ from flask import Flask, Response, request
 from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
 from env import obtener_env
+from flujo_pedido import ID_BOTON_HACER_PEDIDO, FlujoPedido
 from llm import crear_proveedor_ia
 from media_cache import obtener_media_id
 from mensajes_enriquecidos import (
@@ -18,7 +19,9 @@ from mensajes_enriquecidos import (
     enviar_lista,
     enviar_ubicacion,
 )
+from pedidos import Pedidos
 from recursos import LIMITE_CUERPO_INTERACTIVO, cargar_recursos
+from telefono import enmascarar_numero
 from whatsapp import enviar_texto
 
 logger = logging.getLogger(__name__)
@@ -61,14 +64,6 @@ MENU_TEXTO_CUERPO = "Este es nuestro menú:"
 BOTONES_TEXTO_CUERPO_POR_DEFECTO = "Elija una opción:"
 
 
-def _enmascarar_numero(numero: str) -> str:
-    if not numero:
-        return "desconocido"
-    if len(numero) <= 4:
-        return "*" * len(numero)
-    return "*" * (len(numero) - 4) + numero[-4:]
-
-
 def _resolver_clave_perfil() -> str:
     clave = obtener_env("PERFIL_NEGOCIO") or PERFIL_NEGOCIO_POR_DEFECTO
     if clave not in PERFILES_NEGOCIO:
@@ -101,6 +96,22 @@ def _extraer_mensaje_derivacion(ruta_negocio: Path) -> str:
     return texto or MENSAJE_DERIVACION_POR_DEFECTO
 
 
+def _es_inicio_de_pedido(mensaje: dict, recursos: dict) -> bool:
+    # Un pedido empieza cuando el cliente elige un producto de la lista del
+    # menú, o toca el botón "Hacer pedido" de la bienvenida — en ambos casos
+    # desde FUERA del modo pedido (si ya hay uno en construcción, el mensaje
+    # nunca llega hasta aquí: se enruta directo a FlujoPedido).
+    if mensaje.get("type") != "interactive":
+        return False
+    interactivo = mensaje.get("interactive", {})
+    tipo = interactivo.get("type")
+    if tipo == "button_reply":
+        return interactivo.get("button_reply", {}).get("id") == ID_BOTON_HACER_PEDIDO
+    if tipo == "list_reply":
+        return interactivo.get("list_reply", {}).get("id") in recursos.get("catalogo", {})
+    return False
+
+
 def _firma_valida(cuerpo_crudo: bytes, firma_recibida: str | None) -> bool:
     app_secret = obtener_env("META_APP_SECRET")
     if not app_secret or not firma_recibida or not firma_recibida.startswith("sha256="):
@@ -122,6 +133,8 @@ def crear_app(
     enviar_lista_fn=enviar_lista,
     obtener_media_id_fn=obtener_media_id,
     recursos: dict | None = None,
+    pedidos: Pedidos | None = None,
+    perfil: str | None = None,
     mensaje_derivacion: str | None = None,
     reloj=time.time,
 ) -> Flask:
@@ -129,6 +142,10 @@ def crear_app(
 
     if historial_dedup is None:
         historial_dedup = HistorialSQLite()
+    if pedidos is None:
+        pedidos = Pedidos()
+    if perfil is None:
+        perfil = _resolver_clave_perfil()
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = _resolver_ruta_negocio()
     if cerebro is None:
@@ -146,6 +163,17 @@ def crear_app(
     if mensaje_derivacion is None:
         mensaje_derivacion = _extraer_mensaje_derivacion(ruta_negocio_resuelta)
 
+    flujo_pedido = FlujoPedido(
+        pedidos=pedidos,
+        catalogo=recursos.get("catalogo", {}),
+        domicilio=recursos.get("domicilio", {}),
+        mensaje_derivacion=mensaje_derivacion,
+        enviar_texto_fn=enviar_texto_fn,
+        enviar_botones_fn=enviar_botones_fn,
+        enviar_lista_fn=enviar_lista_fn,
+        reloj=reloj,
+    )
+
     @app.after_request
     def _registrar_peticion(respuesta):
         # request.path nunca incluye la cadena de consulta (hub.verify_token,
@@ -156,7 +184,7 @@ def crear_app(
     def _procesar_mensaje(mensaje: dict) -> None:
         id_mensaje = mensaje.get("id")
         numero_remitente = mensaje.get("from", "")
-        numero_enmascarado = _enmascarar_numero(numero_remitente)
+        numero_enmascarado = enmascarar_numero(numero_remitente)
 
         timestamp_mensaje = mensaje.get("timestamp")
         if timestamp_mensaje is not None:
@@ -174,6 +202,16 @@ def crear_app(
 
         if id_mensaje and not historial_dedup.marcar_si_nuevo(id_mensaje):
             logger.info("Mensaje duplicado ignorado (remitente=%s)", numero_enmascarado)
+            return
+
+        pedido_en_construccion = pedidos.obtener_en_construccion(numero_remitente)
+        if pedido_en_construccion is not None:
+            logger.info("Mensaje atendido por el flujo de pedido (remitente=%s)", numero_enmascarado)
+            flujo_pedido.manejar_mensaje(numero_remitente, mensaje)
+            return
+        if _es_inicio_de_pedido(mensaje, recursos):
+            logger.info("Pedido en construcción iniciado (remitente=%s)", numero_enmascarado)
+            flujo_pedido.iniciar(numero_remitente, perfil, mensaje)
             return
 
         tipo_mensaje = mensaje.get("type")
@@ -282,21 +320,17 @@ def crear_app(
 
     def _resolver_texto_interactivo(interactivo: dict) -> str | None:
         # Nunca se le pasa a la IA el id ni el título tal cual llegan de WhatsApp:
-        # solo un texto equivalente ya validado contra la lista blanca del perfil
-        # (botones) o contra el catálogo (filas de la lista del menú).
-        tipo = interactivo.get("type")
-        if tipo == "button_reply":
+        # solo un texto equivalente ya validado contra la lista blanca de botones
+        # del perfil. La única lista que existe hoy es el menú (armado desde el
+        # catálogo), y elegir una fila de ahí siempre inicia un pedido antes de
+        # llegar a esta función (ver _es_inicio_de_pedido) — por eso no hay una
+        # rama "list_reply" aquí: quedaría inalcanzable.
+        if interactivo.get("type") == "button_reply":
             id_recibido = interactivo.get("button_reply", {}).get("id")
             for conjunto in recursos.get("botones", {}).values():
                 for opcion in conjunto["opciones"]:
                     if opcion["id"] == id_recibido:
                         return opcion["equivale_a"]
-            return None
-        if tipo == "list_reply":
-            id_recibido = interactivo.get("list_reply", {}).get("id")
-            producto = recursos.get("catalogo", {}).get(id_recibido)
-            if producto is not None:
-                return f"Me interesa {producto['nombre']}"
             return None
         return None
 

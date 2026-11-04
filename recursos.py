@@ -238,6 +238,14 @@ def _validar_domicilio(domicilio, nombre_archivo: str) -> dict:
         if not isinstance(zona, dict):
             raise ValueError(f"{nombre_archivo}: 'domicilio.{clave}' debe ser un objeto.")
 
+        nombre = zona.get("nombre")
+        if not isinstance(nombre, str) or not (1 <= len(nombre) <= LIMITE_TITULO_FILA_LISTA):
+            raise ValueError(
+                f"{nombre_archivo}: 'domicilio.{clave}.nombre' debe tener entre 1 y "
+                f"{LIMITE_TITULO_FILA_LISTA} caracteres (se usa como título de fila en la lista "
+                "de zonas de WhatsApp)."
+            )
+
         costo = zona.get("costo")
         if isinstance(costo, bool) or not isinstance(costo, int) or costo < 0:
             raise ValueError(
@@ -250,7 +258,7 @@ def _validar_domicilio(domicilio, nombre_archivo: str) -> dict:
                 f"{nombre_archivo}: 'domicilio.{clave}.tiempo_estimado' debe ser un texto no vacío."
             )
 
-        resultado[clave] = {"costo": costo, "tiempo_estimado": tiempo_estimado}
+        resultado[clave] = {"nombre": nombre, "costo": costo, "tiempo_estimado": tiempo_estimado}
 
     return resultado
 

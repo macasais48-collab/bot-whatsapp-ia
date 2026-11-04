@@ -40,7 +40,7 @@
       "descripcion": "¡Hola! ¿En qué le puedo ayudar?",
       "opciones": [
         {"id": "ver_menu", "titulo": "Ver menú", "equivale_a": "¿Qué venden?"},
-        {"id": "domicilios", "titulo": "Domicilios", "equivale_a": "¿Hacen domicilios?"},
+        {"id": "hacer_pedido", "titulo": "Hacer pedido", "equivale_a": "Quiero hacer un pedido"},
         {"id": "ubicacion", "titulo": "Ubicación", "equivale_a": "¿Dónde quedan?"}
       ]
     }
@@ -48,14 +48,17 @@
   "domicilio": {
     "pedido_minimo": 15000,
     "centro": {
+      "nombre": "Centro",
       "costo": 3000,
       "tiempo_estimado": "20-30 minutos"
     },
     "la_estacion": {
+      "nombre": "La Estación",
       "costo": 4000,
       "tiempo_estimado": "30-45 minutos"
     },
     "zona_rural_cercana": {
+      "nombre": "Zona rural cercana",
       "costo": 6000,
       "tiempo_estimado": "45-60 minutos"
     }
