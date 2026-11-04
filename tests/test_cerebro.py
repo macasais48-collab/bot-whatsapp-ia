@@ -315,6 +315,86 @@ def test_adjunto_de_enlace_valido_se_resuelve_con_los_datos_del_perfil(tmp_path)
     assert respuesta.adjuntos == [{"tipo": "enlace", "datos": RECURSOS_DE_PRUEBA["enlaces"]["mapa"]}]
 
 
+RECURSOS_DE_PRUEBA_INTERACTIVOS = {
+    "catalogo": {
+        "tamal": {"nombre": "Tamal", "precio": 8000, "unidad": "unidad"},
+    },
+    "botones": {
+        "bienvenida": {
+            "descripcion": "¿En qué le ayudo?",
+            "opciones": [{"id": "ver_menu", "titulo": "Ver menú", "equivale_a": "¿Qué venden?"}],
+        }
+    },
+}
+
+
+def test_el_prompt_describe_los_botones_y_el_menu_disponibles(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS)
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    cerebro.responder("conv1", "hola")
+
+    sistema, _ = fake.ultima_llamada
+    assert '"tipo": "botones", "clave": "bienvenida"' in sistema
+    assert '"tipo": "menu"' in sistema
+
+
+def test_adjunto_de_botones_valido_se_resuelve_con_los_datos_del_perfil(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS)
+    fake = FakeProveedor(
+        json.dumps(
+            {"respuesta": "Hola", "derivar": False, "adjuntos": [{"tipo": "botones", "clave": "bienvenida"}]}
+        )
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "hola")
+
+    assert respuesta.adjuntos == [
+        {"tipo": "botones", "datos": RECURSOS_DE_PRUEBA_INTERACTIVOS["botones"]["bienvenida"]}
+    ]
+
+
+def test_clave_de_botones_inventada_se_descarta(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS)
+    fake = FakeProveedor(
+        json.dumps(
+            {"respuesta": "Hola", "derivar": False, "adjuntos": [{"tipo": "botones", "clave": "no_existe"}]}
+        )
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "hola")
+
+    assert respuesta.texto == "Hola"
+    assert respuesta.adjuntos == []
+
+
+def test_adjunto_de_menu_se_resuelve_con_el_catalogo_completo(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS)
+    fake = FakeProveedor(
+        json.dumps({"respuesta": "Esto vendemos", "derivar": False, "adjuntos": [{"tipo": "menu"}]})
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "¿qué venden?")
+
+    assert respuesta.adjuntos == [{"tipo": "menu", "datos": RECURSOS_DE_PRUEBA_INTERACTIVOS["catalogo"]}]
+
+
+def test_adjunto_de_menu_se_descarta_si_el_perfil_no_tiene_catalogo(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA)  # sin "catalogo"
+    fake = FakeProveedor(
+        json.dumps({"respuesta": "Esto vendemos", "derivar": False, "adjuntos": [{"tipo": "menu"}]})
+    )
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    respuesta = cerebro.responder("conv1", "¿qué venden?")
+
+    assert respuesta.adjuntos == []
+
+
 def test_una_clave_inventada_por_la_ia_nunca_se_envia_y_se_registra(tmp_path, caplog):
     caplog.set_level(logging.WARNING, logger="cerebro")
     ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA)

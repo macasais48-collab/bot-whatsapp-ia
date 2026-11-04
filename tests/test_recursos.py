@@ -56,12 +56,12 @@ def test_falla_con_json_mal_formado(tmp_path):
 
 
 def test_falla_con_clave_raiz_desconocida(tmp_path):
-    ruta = _escribir(tmp_path, "recursos.json", {"botones": {}})
+    ruta = _escribir(tmp_path, "recursos.json", {"pagos": {}})
 
     with pytest.raises(ValueError) as info:
         cargar_recursos(ruta)
 
-    assert "botones" in str(info.value)
+    assert "pagos" in str(info.value)
 
 
 @pytest.mark.parametrize(
@@ -306,3 +306,123 @@ def test_falla_con_pedido_minimo_invalido(tmp_path):
         cargar_recursos(ruta)
 
     assert "pedido_minimo" in str(info.value)
+
+
+def test_falla_si_el_nombre_de_un_producto_supera_el_limite_de_titulo_de_fila(tmp_path):
+    ruta = _escribir(
+        tmp_path,
+        "recursos.json",
+        {"catalogo": {"x": {"nombre": "N" * 25, "precio": 1000, "unidad": "unidad"}}},
+    )
+
+    with pytest.raises(ValueError) as info:
+        cargar_recursos(ruta)
+
+    assert "nombre" in str(info.value)
+
+
+def test_falla_si_el_catalogo_supera_el_maximo_de_filas_de_una_lista(tmp_path):
+    catalogo = {
+        f"producto_{i}": {"nombre": f"Producto {i}", "precio": 1000, "unidad": "unidad"}
+        for i in range(11)
+    }
+    ruta = _escribir(tmp_path, "recursos.json", {"catalogo": catalogo})
+
+    with pytest.raises(ValueError) as info:
+        cargar_recursos(ruta)
+
+    assert "catalogo" in str(info.value)
+
+
+def test_carga_un_conjunto_de_botones_valido(tmp_path):
+    ruta = _escribir(
+        tmp_path,
+        "recursos.json",
+        {
+            "botones": {
+                "bienvenida": {
+                    "descripcion": "¿En qué le ayudo?",
+                    "opciones": [{"id": "ver_menu", "titulo": "Ver menú", "equivale_a": "¿Qué venden?"}],
+                }
+            }
+        },
+    )
+
+    recursos = cargar_recursos(ruta)
+
+    assert recursos["botones"]["bienvenida"] == {
+        "descripcion": "¿En qué le ayudo?",
+        "opciones": [{"id": "ver_menu", "titulo": "Ver menú", "equivale_a": "¿Qué venden?"}],
+    }
+
+
+def test_falla_si_un_conjunto_de_botones_supera_el_maximo_de_tres(tmp_path):
+    opciones = [
+        {"id": f"op{i}", "titulo": f"Opción {i}", "equivale_a": f"Pregunta {i}"} for i in range(4)
+    ]
+    ruta = _escribir(
+        tmp_path, "recursos.json", {"botones": {"x": {"descripcion": "d", "opciones": opciones}}}
+    )
+
+    with pytest.raises(ValueError) as info:
+        cargar_recursos(ruta)
+
+    assert "opciones" in str(info.value)
+
+
+def test_falla_con_ids_de_botones_repetidos(tmp_path):
+    ruta = _escribir(
+        tmp_path,
+        "recursos.json",
+        {
+            "botones": {
+                "x": {
+                    "descripcion": "d",
+                    "opciones": [
+                        {"id": "a", "titulo": "A", "equivale_a": "x"},
+                        {"id": "a", "titulo": "B", "equivale_a": "y"},
+                    ],
+                }
+            }
+        },
+    )
+
+    with pytest.raises(ValueError) as info:
+        cargar_recursos(ruta)
+
+    assert "repetido" in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "opcion_invalida,fragmento_error",
+    [
+        ({"id": "", "titulo": "A", "equivale_a": "x"}, "id"),
+        ({"id": " a", "titulo": "A", "equivale_a": "x"}, "id"),
+        ({"id": "a" * 300, "titulo": "A", "equivale_a": "x"}, "id"),
+        ({"id": "a", "titulo": "", "equivale_a": "x"}, "titulo"),
+        ({"id": "a", "titulo": "Título de botón demasiado largo", "equivale_a": "x"}, "titulo"),
+        ({"id": "a", "titulo": "A", "equivale_a": ""}, "equivale_a"),
+    ],
+)
+def test_falla_con_opcion_de_boton_invalida(tmp_path, opcion_invalida, fragmento_error):
+    ruta = _escribir(
+        tmp_path, "recursos.json", {"botones": {"x": {"descripcion": "d", "opciones": [opcion_invalida]}}}
+    )
+
+    with pytest.raises(ValueError) as info:
+        cargar_recursos(ruta)
+
+    assert fragmento_error in str(info.value)
+
+
+def test_falla_con_descripcion_de_botones_vacia(tmp_path):
+    ruta = _escribir(
+        tmp_path,
+        "recursos.json",
+        {"botones": {"x": {"descripcion": "", "opciones": [{"id": "a", "titulo": "A", "equivale_a": "x"}]}}},
+    )
+
+    with pytest.raises(ValueError) as info:
+        cargar_recursos(ruta)
+
+    assert "descripcion" in str(info.value)

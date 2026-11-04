@@ -11,7 +11,14 @@ from cerebro import Cerebro
 from env import obtener_env
 from llm import crear_proveedor_ia
 from media_cache import obtener_media_id
-from mensajes_enriquecidos import enviar_cta_url, enviar_imagen, enviar_ubicacion
+from mensajes_enriquecidos import (
+    enviar_botones,
+    enviar_cta_url,
+    enviar_imagen,
+    enviar_lista,
+    enviar_ubicacion,
+)
+from recursos import LIMITE_CUERPO_INTERACTIVO, cargar_recursos
 from whatsapp import enviar_texto
 
 logger = logging.getLogger(__name__)
@@ -44,6 +51,14 @@ MENSAJE_SOLO_TEXTO = (
 
 MARCADOR_MENSAJE_DERIVACION = "## Mensaje de derivación"
 UMBRAL_MENSAJE_VIEJO_SEGUNDOS = 5 * 60
+
+MENU_TITULO_SECCION = "Menú"
+MENU_TEXTO_BOTON = "Ver menú"
+# Cuerpos usados solo como respaldo: cuando el texto de la IA no cabe en el
+# límite de WhatsApp para un mensaje interactivo, ese texto se envía aparte y
+# el interactivo lleva este cuerpo corto fijo en su lugar.
+MENU_TEXTO_CUERPO = "Este es nuestro menú:"
+BOTONES_TEXTO_CUERPO_POR_DEFECTO = "Elija una opción:"
 
 
 def _enmascarar_numero(numero: str) -> str:
@@ -103,7 +118,10 @@ def crear_app(
     enviar_ubicacion_fn=enviar_ubicacion,
     enviar_cta_url_fn=enviar_cta_url,
     enviar_imagen_fn=enviar_imagen,
+    enviar_botones_fn=enviar_botones,
+    enviar_lista_fn=enviar_lista,
     obtener_media_id_fn=obtener_media_id,
+    recursos: dict | None = None,
     mensaje_derivacion: str | None = None,
     reloj=time.time,
 ) -> Flask:
@@ -114,12 +132,17 @@ def crear_app(
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = _resolver_ruta_negocio()
     if cerebro is None:
+        ruta_recursos_resuelta = _resolver_ruta_recursos()
         cerebro = Cerebro(
             crear_proveedor_ia(),
             historial_dedup,
             ruta_negocio=ruta_negocio_resuelta,
-            ruta_recursos=_resolver_ruta_recursos(),
+            ruta_recursos=ruta_recursos_resuelta,
         )
+        if recursos is None:
+            recursos = cargar_recursos(ruta_recursos_resuelta)
+    if recursos is None:
+        recursos = {}
     if mensaje_derivacion is None:
         mensaje_derivacion = _extraer_mensaje_derivacion(ruta_negocio_resuelta)
 
@@ -153,16 +176,27 @@ def crear_app(
             logger.info("Mensaje duplicado ignorado (remitente=%s)", numero_enmascarado)
             return
 
-        if mensaje.get("type") != "text":
+        tipo_mensaje = mensaje.get("type")
+        if tipo_mensaje == "text":
+            texto = mensaje.get("text", {}).get("body", "")
+        elif tipo_mensaje == "interactive":
+            texto = _resolver_texto_interactivo(mensaje.get("interactive", {}))
+            if texto is None:
+                logger.info(
+                    "Respuesta interactiva con id desconocido o no reconocida, ignorada "
+                    "(remitente=%s)",
+                    numero_enmascarado,
+                )
+                return
+        else:
             logger.info(
                 "Mensaje no-texto recibido (remitente=%s, tipo=%s)",
                 numero_enmascarado,
-                mensaje.get("type"),
+                tipo_mensaje,
             )
             enviar_texto_fn(numero_remitente, MENSAJE_SOLO_TEXTO)
             return
 
-        texto = mensaje.get("text", {}).get("body", "")
         respuesta = cerebro.responder(numero_remitente, texto)
 
         if respuesta.derivar:
@@ -178,9 +212,40 @@ def crear_app(
                     numero_enmascarado,
                 )
         else:
-            enviar_texto_fn(numero_remitente, respuesta.texto)
+            # Un adjunto de botones o menú trae su propio mensaje interactivo con
+            # cuerpo: si se enviara el texto de la IA por separado Y ese cuerpo,
+            # el cliente vería dos mensajes seguidos para lo mismo (ver bug de la
+            # prueba en vivo de la sub-fase 2). Por eso el primero de esos
+            # adjuntos absorbe el texto de la IA como su propio cuerpo, y solo el
+            # resto de adjuntos (ubicación, enlaces, imágenes, u otro botones/menú
+            # adicional) se envían como mensajes aparte, igual que antes.
+            adjunto_interactivo = next(
+                (a for a in respuesta.adjuntos if a["tipo"] in ("botones", "menu")), None
+            )
+            if adjunto_interactivo is not None:
+                _enviar_interactivo_con_texto(numero_remitente, respuesta.texto, adjunto_interactivo)
+            else:
+                enviar_texto_fn(numero_remitente, respuesta.texto)
+
             for adjunto in respuesta.adjuntos:
+                if adjunto is adjunto_interactivo:
+                    continue
                 _enviar_adjunto(numero_remitente, adjunto)
+
+    def _enviar_interactivo_con_texto(numero: str, texto: str, adjunto: dict) -> None:
+        tipo = adjunto["tipo"]
+        datos = adjunto["datos"]
+        if len(texto) <= LIMITE_CUERPO_INTERACTIVO:
+            cuerpo = texto
+        else:
+            enviar_texto_fn(numero, texto)
+            cuerpo = BOTONES_TEXTO_CUERPO_POR_DEFECTO if tipo == "botones" else MENU_TEXTO_CUERPO
+
+        if tipo == "botones":
+            opciones = [{"id": opcion["id"], "titulo": opcion["titulo"]} for opcion in datos["opciones"]]
+            enviar_botones_fn(numero, cuerpo, opciones)
+        elif tipo == "menu":
+            _enviar_menu(numero, datos, cuerpo)
 
     def _enviar_adjunto(numero: str, adjunto: dict) -> None:
         # cerebro.py ya validó el adjunto contra los recursos del perfil: aquí solo
@@ -195,6 +260,45 @@ def crear_app(
             media_id = obtener_media_id_fn(datos["clave"], datos["archivo"])
             if media_id is not None:
                 enviar_imagen_fn(numero, media_id, caption=datos["descripcion"])
+        elif tipo == "botones":
+            opciones = [{"id": opcion["id"], "titulo": opcion["titulo"]} for opcion in datos["opciones"]]
+            enviar_botones_fn(numero, datos["descripcion"], opciones)
+        elif tipo == "menu":
+            _enviar_menu(numero, datos)
+
+    def _enviar_menu(numero: str, catalogo: dict, cuerpo: str = MENU_TEXTO_CUERPO) -> None:
+        # El menú SIEMPRE se arma aquí, a partir del catálogo validado del perfil:
+        # la IA nunca decide los productos, nombres ni precios que aparecen.
+        filas = [
+            {
+                "id": clave,
+                "titulo": producto["nombre"],
+                "descripcion": f"${producto['precio']:,}".replace(",", "."),
+            }
+            for clave, producto in catalogo.items()
+        ]
+        secciones = [{"titulo": MENU_TITULO_SECCION, "filas": filas}]
+        enviar_lista_fn(numero, cuerpo, MENU_TEXTO_BOTON, secciones)
+
+    def _resolver_texto_interactivo(interactivo: dict) -> str | None:
+        # Nunca se le pasa a la IA el id ni el título tal cual llegan de WhatsApp:
+        # solo un texto equivalente ya validado contra la lista blanca del perfil
+        # (botones) o contra el catálogo (filas de la lista del menú).
+        tipo = interactivo.get("type")
+        if tipo == "button_reply":
+            id_recibido = interactivo.get("button_reply", {}).get("id")
+            for conjunto in recursos.get("botones", {}).values():
+                for opcion in conjunto["opciones"]:
+                    if opcion["id"] == id_recibido:
+                        return opcion["equivale_a"]
+            return None
+        if tipo == "list_reply":
+            id_recibido = interactivo.get("list_reply", {}).get("id")
+            producto = recursos.get("catalogo", {}).get(id_recibido)
+            if producto is not None:
+                return f"Me interesa {producto['nombre']}"
+            return None
+        return None
 
     @app.route("/salud", methods=["GET"])
     def salud():

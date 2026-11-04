@@ -35,6 +35,16 @@
       "unidad": "unidad"
     }
   },
+  "botones": {
+    "bienvenida": {
+      "descripcion": "¡Hola! ¿En qué le puedo ayudar?",
+      "opciones": [
+        {"id": "ver_menu", "titulo": "Ver menú", "equivale_a": "¿Qué venden?"},
+        {"id": "domicilios", "titulo": "Domicilios", "equivale_a": "¿Hacen domicilios?"},
+        {"id": "ubicacion", "titulo": "Ubicación", "equivale_a": "¿Dónde quedan?"}
+      ]
+    }
+  },
   "domicilio": {
     "pedido_minimo": 15000,
     "centro": {

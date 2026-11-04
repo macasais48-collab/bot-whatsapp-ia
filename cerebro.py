@@ -120,7 +120,8 @@ class Cerebro:
             "antes ni después, con exactamente esta forma:\n"
             '{"respuesta": "<tu respuesta en español>", "derivar": true o false, '
             '"adjuntos": [<opcional: objetos como {"tipo": "ubicacion"}, '
-            '{"tipo": "enlace", "clave": "<clave>"} o {"tipo": "imagen", "clave": "<clave>"}>]}\n\n'
+            '{"tipo": "enlace", "clave": "<clave>"}, {"tipo": "imagen", "clave": "<clave>"}, '
+            '{"tipo": "botones", "clave": "<clave>"} o {"tipo": "menu"}>]}\n\n'
             "El campo 'adjuntos' es opcional: inclúyelo solo con las claves listadas en "
             "'Recursos disponibles' más abajo, cuando le sirvan al cliente. Nunca inventes "
             "una clave, URL o coordenada que no esté en esa lista. Si no hace falta ningún "
@@ -169,6 +170,18 @@ class Cerebro:
             lineas.append(
                 f'- {{"tipo": "imagen", "clave": "{clave}"}}: {imagen["descripcion"]}'
             )
+        for clave, conjunto in self._recursos.get("botones", {}).items():
+            titulos = ", ".join(f'"{opcion["titulo"]}"' for opcion in conjunto["opciones"])
+            lineas.append(
+                f'- {{"tipo": "botones", "clave": "{clave}"}}: botones de respuesta rápida ({titulos}).'
+            )
+        if self._recursos.get("catalogo"):
+            lineas.append(
+                '- {"tipo": "menu"}: muestra el menú completo del negocio como una lista, armada '
+                "automáticamente con los nombres y precios reales del catálogo (nunca inventes "
+                "productos ni precios: esta lista los toma directo del catálogo). Úsalo cuando el "
+                "cliente pregunte qué venden o pida ver el menú."
+            )
         return "\n".join(lineas)
 
     def _resolver_adjunto(self, item: dict) -> dict | None:
@@ -187,6 +200,16 @@ class Cerebro:
             imagen = self._recursos.get("imagenes", {}).get(item.get("clave"))
             if imagen is not None:
                 return {"tipo": "imagen", "datos": imagen}
+            return None
+        if tipo == "botones":
+            conjunto = self._recursos.get("botones", {}).get(item.get("clave"))
+            if conjunto is not None:
+                return {"tipo": "botones", "datos": conjunto}
+            return None
+        if tipo == "menu":
+            catalogo = self._recursos.get("catalogo")
+            if catalogo:
+                return {"tipo": "menu", "datos": catalogo}
             return None
         return None
 

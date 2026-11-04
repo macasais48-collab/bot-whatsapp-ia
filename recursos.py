@@ -10,7 +10,22 @@ FIRMAS_IMAGEN_PERMITIDAS = (
     b"\x89PNG\r\n\x1a\n",  # PNG
 )
 
-CLAVES_RAIZ_PERMITIDAS = {"ubicacion", "enlaces", "imagenes", "catalogo", "domicilio"}
+# Límites oficiales de Meta para mensajes interactivos (confirmados en
+# developers.facebook.com/documentation/business-messaging/whatsapp/messages/
+# interactive-reply-buttons-messages e interactive-list-messages, 3/11/2026).
+LIMITE_BOTONES_POR_CONJUNTO = 3
+LIMITE_ID_BOTON = 256
+LIMITE_TITULO_BOTON_RESPUESTA = 20
+LIMITE_CUERPO_INTERACTIVO = 1024
+LIMITE_SECCIONES_LISTA = 10
+LIMITE_FILAS_LISTA = 10
+LIMITE_ID_FILA_LISTA = 200
+LIMITE_TITULO_FILA_LISTA = 24
+LIMITE_DESCRIPCION_FILA_LISTA = 72
+LIMITE_TITULO_SECCION_LISTA = 24
+LIMITE_TEXTO_BOTON_LISTA = 20
+
+CLAVES_RAIZ_PERMITIDAS = {"ubicacion", "enlaces", "imagenes", "catalogo", "domicilio", "botones"}
 CLAVE_PEDIDO_MINIMO = "pedido_minimo"
 
 
@@ -41,6 +56,8 @@ def cargar_recursos(ruta: Path) -> dict:
         recursos["catalogo"] = _validar_catalogo(datos["catalogo"], ruta.name)
     if "domicilio" in datos:
         recursos["domicilio"] = _validar_domicilio(datos["domicilio"], ruta.name)
+    if "botones" in datos:
+        recursos["botones"] = _validar_botones(datos["botones"], ruta.name)
     return recursos
 
 
@@ -157,14 +174,34 @@ def _validar_catalogo(catalogo, nombre_archivo: str) -> dict:
     if not isinstance(catalogo, dict):
         raise ValueError(f"{nombre_archivo}: 'catalogo' debe ser un objeto.")
 
+    # El menú se arma por código como una sola lista de WhatsApp a partir de todo
+    # el catálogo (ver webhook.py): no puede tener más filas de las que WhatsApp
+    # permite en una lista.
+    if len(catalogo) > LIMITE_FILAS_LISTA:
+        raise ValueError(
+            f"{nombre_archivo}: 'catalogo' tiene {len(catalogo)} productos, más de los "
+            f"{LIMITE_FILAS_LISTA} que WhatsApp permite en una sola lista (el menú se arma "
+            "automáticamente a partir de todo el catálogo)."
+        )
+
     resultado = {}
     for clave, producto in catalogo.items():
         if not isinstance(producto, dict):
             raise ValueError(f"{nombre_archivo}: 'catalogo.{clave}' debe ser un objeto.")
 
+        if len(clave) > LIMITE_ID_FILA_LISTA or clave != clave.strip():
+            raise ValueError(
+                f"{nombre_archivo}: la clave 'catalogo.{clave}' se usa como id de fila de lista: debe "
+                f"tener máximo {LIMITE_ID_FILA_LISTA} caracteres y sin espacios al inicio ni al final."
+            )
+
         nombre = producto.get("nombre")
-        if not isinstance(nombre, str) or not nombre.strip():
-            raise ValueError(f"{nombre_archivo}: 'catalogo.{clave}.nombre' debe ser un texto no vacío.")
+        if not isinstance(nombre, str) or not (1 <= len(nombre) <= LIMITE_TITULO_FILA_LISTA):
+            raise ValueError(
+                f"{nombre_archivo}: 'catalogo.{clave}.nombre' debe tener entre 1 y "
+                f"{LIMITE_TITULO_FILA_LISTA} caracteres (se usa como título de fila en el menú "
+                "de WhatsApp)."
+            )
 
         precio = producto.get("precio")
         if isinstance(precio, bool) or not isinstance(precio, int) or precio <= 0:
@@ -214,5 +251,76 @@ def _validar_domicilio(domicilio, nombre_archivo: str) -> dict:
             )
 
         resultado[clave] = {"costo": costo, "tiempo_estimado": tiempo_estimado}
+
+    return resultado
+
+
+def _validar_botones(botones, nombre_archivo: str) -> dict:
+    if not isinstance(botones, dict):
+        raise ValueError(f"{nombre_archivo}: 'botones' debe ser un objeto.")
+
+    resultado = {}
+    for clave, conjunto in botones.items():
+        if not isinstance(conjunto, dict):
+            raise ValueError(f"{nombre_archivo}: 'botones.{clave}' debe ser un objeto.")
+
+        descripcion = conjunto.get("descripcion")
+        if not isinstance(descripcion, str) or not (1 <= len(descripcion) <= LIMITE_CUERPO_INTERACTIVO):
+            raise ValueError(
+                f"{nombre_archivo}: 'botones.{clave}.descripcion' debe tener entre 1 y "
+                f"{LIMITE_CUERPO_INTERACTIVO} caracteres (límite de WhatsApp para el cuerpo de un "
+                "mensaje con botones)."
+            )
+
+        opciones = conjunto.get("opciones")
+        if not isinstance(opciones, list) or not (1 <= len(opciones) <= LIMITE_BOTONES_POR_CONJUNTO):
+            raise ValueError(
+                f"{nombre_archivo}: 'botones.{clave}.opciones' debe tener entre 1 y "
+                f"{LIMITE_BOTONES_POR_CONJUNTO} elementos (límite de WhatsApp para botones de "
+                "respuesta rápida)."
+            )
+
+        ids_vistos = set()
+        opciones_validadas = []
+        for indice, opcion in enumerate(opciones):
+            if not isinstance(opcion, dict):
+                raise ValueError(f"{nombre_archivo}: 'botones.{clave}.opciones[{indice}]' debe ser un objeto.")
+
+            id_boton = opcion.get("id")
+            if (
+                not isinstance(id_boton, str)
+                or not (1 <= len(id_boton) <= LIMITE_ID_BOTON)
+                or id_boton != id_boton.strip()
+            ):
+                raise ValueError(
+                    f"{nombre_archivo}: 'botones.{clave}.opciones[{indice}].id' debe ser un texto de 1 a "
+                    f"{LIMITE_ID_BOTON} caracteres, sin espacios al inicio ni al final."
+                )
+            if id_boton in ids_vistos:
+                raise ValueError(
+                    f"{nombre_archivo}: 'botones.{clave}' tiene el id '{id_boton}' repetido; cada botón "
+                    "del conjunto debe tener un id único."
+                )
+            ids_vistos.add(id_boton)
+
+            titulo = opcion.get("titulo")
+            if not isinstance(titulo, str) or not (1 <= len(titulo) <= LIMITE_TITULO_BOTON_RESPUESTA):
+                raise ValueError(
+                    f"{nombre_archivo}: 'botones.{clave}.opciones[{indice}].titulo' debe tener entre 1 y "
+                    f"{LIMITE_TITULO_BOTON_RESPUESTA} caracteres (límite de WhatsApp para el título de "
+                    "un botón)."
+                )
+
+            equivale_a = opcion.get("equivale_a")
+            if not isinstance(equivale_a, str) or not equivale_a.strip():
+                raise ValueError(
+                    f"{nombre_archivo}: 'botones.{clave}.opciones[{indice}].equivale_a' debe ser un "
+                    "texto no vacío: es el mensaje que se le pasa al asistente cuando el cliente toca "
+                    "este botón."
+                )
+
+            opciones_validadas.append({"id": id_boton, "titulo": titulo, "equivale_a": equivale_a})
+
+        resultado[clave] = {"descripcion": descripcion, "opciones": opciones_validadas}
 
     return resultado

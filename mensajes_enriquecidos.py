@@ -103,3 +103,54 @@ def enviar_cta_url(numero: str, texto_cuerpo: str, texto_boton: str, url: str) -
         },
     }
     return _enviar(cuerpo)
+
+
+def enviar_botones(numero: str, texto_cuerpo: str, botones: list[dict]) -> bool:
+    cuerpo = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": numero,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": texto_cuerpo},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": boton["id"], "title": boton["titulo"]}}
+                    for boton in botones
+                ]
+            },
+        },
+    }
+    return _enviar(cuerpo)
+
+
+def enviar_lista(numero: str, texto_cuerpo: str, texto_boton: str, secciones: list[dict]) -> bool:
+    cuerpo = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": numero,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {"text": texto_cuerpo},
+            "action": {
+                "button": texto_boton,
+                "sections": [
+                    {
+                        "title": seccion["titulo"],
+                        "rows": [
+                            {
+                                "id": fila["id"],
+                                "title": fila["titulo"],
+                                "description": fila.get("descripcion", ""),
+                            }
+                            for fila in seccion["filas"]
+                        ],
+                    }
+                    for seccion in secciones
+                ],
+            },
+        },
+    }
+    return _enviar(cuerpo)

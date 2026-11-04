@@ -9,9 +9,13 @@ from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
 from historial import HistorialMemoria
 from llm.base import ProveedorIA
+from recursos import LIMITE_CUERPO_INTERACTIVO, cargar_recursos
 from webhook import (
+    BOTONES_TEXTO_CUERPO_POR_DEFECTO,
     MENSAJE_DERIVACION_POR_DEFECTO,
     MENSAJE_SOLO_TEXTO,
+    MENU_TEXTO_BOTON,
+    MENU_TEXTO_CUERPO,
     PERFIL_NEGOCIO_POR_DEFECTO,
     PERFILES_NEGOCIO,
     UMBRAL_MENSAJE_VIEJO_SEGUNDOS,
@@ -70,6 +74,24 @@ class EnviosImagenFalsos:
 
     def __call__(self, numero, media_id, caption=None):
         self.llamadas.append((numero, media_id, caption))
+        return True
+
+
+class EnviosBotonesFalsos:
+    def __init__(self):
+        self.llamadas = []
+
+    def __call__(self, numero, texto_cuerpo, botones):
+        self.llamadas.append((numero, texto_cuerpo, botones))
+        return True
+
+
+class EnviosListaFalsos:
+    def __init__(self):
+        self.llamadas = []
+
+    def __call__(self, numero, texto_cuerpo, texto_boton, secciones):
+        self.llamadas.append((numero, texto_cuerpo, texto_boton, secciones))
         return True
 
 
@@ -137,6 +159,31 @@ def _payload_mensaje_imagen(id_mensaje, numero):
     return _payload_mensaje(id_mensaje, numero, {"type": "image", "image": {"id": "abc123"}})
 
 
+def _payload_mensaje_boton(id_mensaje, numero, id_boton):
+    return _payload_mensaje(
+        id_mensaje,
+        numero,
+        {
+            "type": "interactive",
+            "interactive": {"type": "button_reply", "button_reply": {"id": id_boton, "title": "x"}},
+        },
+    )
+
+
+def _payload_mensaje_lista(id_mensaje, numero, id_fila):
+    return _payload_mensaje(
+        id_mensaje,
+        numero,
+        {
+            "type": "interactive",
+            "interactive": {
+                "type": "list_reply",
+                "list_reply": {"id": id_fila, "title": "x", "description": ""},
+            },
+        },
+    )
+
+
 def _payload_estado(id_mensaje, numero):
     return {
         "object": "whatsapp_business_account",
@@ -186,12 +233,32 @@ def envios_imagen():
 
 
 @pytest.fixture
+def envios_botones():
+    return EnviosBotonesFalsos()
+
+
+@pytest.fixture
+def envios_lista():
+    return EnviosListaFalsos()
+
+
+@pytest.fixture
 def obtencion_media_id():
     return ObtencionMediaIdFalsa()
 
 
 @pytest.fixture
-def fabrica_cliente(tmp_path, monkeypatch, envios, envios_ubicacion, envios_cta_url, envios_imagen, obtencion_media_id):
+def fabrica_cliente(
+    tmp_path,
+    monkeypatch,
+    envios,
+    envios_ubicacion,
+    envios_cta_url,
+    envios_imagen,
+    envios_botones,
+    envios_lista,
+    obtencion_media_id,
+):
     monkeypatch.setenv("META_APP_SECRET", APP_SECRET)
     monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", VERIFY_TOKEN)
 
@@ -207,6 +274,7 @@ def fabrica_cliente(tmp_path, monkeypatch, envios, envios_ubicacion, envios_cta_
         fake_proveedor = FakeProveedor(salida_ia)
         historial_dedup = HistorialSQLite(tmp_path / f"prueba_{contador['n']}.db")
         cerebro = Cerebro(fake_proveedor, HistorialMemoria(), ruta_recursos=ruta_recursos)
+        recursos = cargar_recursos(ruta_recursos) if ruta_recursos is not None else {}
         app = crear_app(
             cerebro=cerebro,
             historial_dedup=historial_dedup,
@@ -214,7 +282,10 @@ def fabrica_cliente(tmp_path, monkeypatch, envios, envios_ubicacion, envios_cta_
             enviar_ubicacion_fn=envios_ubicacion,
             enviar_cta_url_fn=envios_cta_url,
             enviar_imagen_fn=envios_imagen,
+            enviar_botones_fn=envios_botones,
+            enviar_lista_fn=envios_lista,
             obtener_media_id_fn=obtener_media_id_fn or obtencion_media_id,
+            recursos=recursos,
             reloj=reloj or (lambda: RELOJ_PRUEBA_SEGUNDOS),
         )
         app.testing = True
@@ -618,3 +689,201 @@ def test_si_falla_la_subida_de_la_imagen_el_texto_se_envia_igual(
     assert respuesta.status_code == 200
     assert envios.llamadas == [("573001112233", "Aquí tienes la foto")]
     assert envios_imagen.llamadas == []
+
+
+RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK = {
+    "catalogo": {
+        "tamal_sencillo": {"nombre": "Tamal sencillo", "precio": 8000, "unidad": "unidad"},
+    },
+    "botones": {
+        "bienvenida": {
+            "descripcion": "¿En qué le ayudo?",
+            "opciones": [{"id": "ver_menu", "titulo": "Ver menú", "equivale_a": "¿Qué venden?"}],
+        }
+    },
+}
+
+
+def test_boton_entrante_valido_se_traduce_a_texto_y_sigue_el_flujo_normal(
+    fabrica_cliente, envios, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps({"respuesta": "Vendemos tamales", "derivar": False}),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_boton("wamid.1", "573001112233", "ver_menu")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", "Vendemos tamales")]
+
+
+def test_fila_de_lista_entrante_valida_se_traduce_al_nombre_del_producto(
+    fabrica_cliente, envios, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps({"respuesta": "Buena elección", "derivar": False}),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_lista("wamid.1", "573001112233", "tamal_sencillo")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", "Buena elección")]
+
+
+def test_boton_entrante_con_id_desconocido_se_ignora(fabrica_cliente, envios, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="webhook")
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
+    cliente = fabrica_cliente(ruta_recursos=ruta_recursos)
+    payload = _payload_mensaje_boton("wamid.1", "573001112233", "id_inventado")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == []
+    mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
+    assert "desconocid" in mensajes.lower()
+
+
+def test_fila_de_lista_entrante_con_id_desconocido_se_ignora(fabrica_cliente, envios, tmp_path):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
+    cliente = fabrica_cliente(ruta_recursos=ruta_recursos)
+    payload = _payload_mensaje_lista("wamid.1", "573001112233", "producto_inventado")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == []
+
+
+def test_boton_y_texto_de_la_ia_se_envian_en_un_solo_mensaje(
+    fabrica_cliente, envios, envios_botones, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps(
+            {
+                "respuesta": "¡Hola! Bienvenido a Tamales Tolimenses.",
+                "derivar": False,
+                "adjuntos": [{"tipo": "botones", "clave": "bienvenida"}],
+            }
+        ),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "hola")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    # El texto de la IA nunca se envía aparte: es el cuerpo del propio mensaje
+    # con botones, para evitar el doble saludo visto en la prueba en vivo.
+    assert envios.llamadas == []
+    assert envios_botones.llamadas == [
+        (
+            "573001112233",
+            "¡Hola! Bienvenido a Tamales Tolimenses.",
+            [{"id": "ver_menu", "titulo": "Ver menú"}],
+        )
+    ]
+
+
+def test_menu_y_texto_de_la_ia_se_envian_en_un_solo_mensaje_pero_las_filas_salen_del_catalogo(
+    fabrica_cliente, envios, envios_lista, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps(
+            {
+                "respuesta": "Con gusto, esto vendemos: tamal especial carísimo a $999.999",
+                "derivar": False,
+                "adjuntos": [{"tipo": "menu"}],
+            }
+        ),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "¿qué venden?")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == []
+    assert len(envios_lista.llamadas) == 1
+    numero, texto_cuerpo, texto_boton, secciones = envios_lista.llamadas[0]
+    # El cuerpo del mensaje sí es el texto de la IA (para no duplicar el saludo)...
+    assert texto_cuerpo == "Con gusto, esto vendemos: tamal especial carísimo a $999.999"
+    assert texto_boton == MENU_TEXTO_BOTON
+    # ...pero las filas de la lista SIEMPRE salen del catálogo validado, nunca
+    # del texto libre de la IA (que aquí inventa un precio y un producto que
+    # no existen en el catálogo).
+    assert secciones[0]["filas"] == [
+        {"id": "tamal_sencillo", "titulo": "Tamal sencillo", "descripcion": "$8.000"}
+    ]
+
+
+def test_texto_largo_con_botones_se_envia_aparte_y_el_interactivo_usa_cuerpo_corto(
+    fabrica_cliente, envios, envios_botones, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
+    texto_largo = "x" * (LIMITE_CUERPO_INTERACTIVO + 1)
+    cliente = fabrica_cliente(
+        json.dumps(
+            {
+                "respuesta": texto_largo,
+                "derivar": False,
+                "adjuntos": [{"tipo": "botones", "clave": "bienvenida"}],
+            }
+        ),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "hola")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", texto_largo)]
+    assert envios_botones.llamadas == [
+        ("573001112233", BOTONES_TEXTO_CUERPO_POR_DEFECTO, [{"id": "ver_menu", "titulo": "Ver menú"}])
+    ]
+
+
+def test_texto_largo_con_menu_se_envia_aparte_y_el_interactivo_usa_cuerpo_corto(
+    fabrica_cliente, envios, envios_lista, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
+    texto_largo = "x" * (LIMITE_CUERPO_INTERACTIVO + 1)
+    cliente = fabrica_cliente(
+        json.dumps({"respuesta": texto_largo, "derivar": False, "adjuntos": [{"tipo": "menu"}]}),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "¿qué venden?")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", texto_largo)]
+    numero, texto_cuerpo, texto_boton, secciones = envios_lista.llamadas[0]
+    assert texto_cuerpo == MENU_TEXTO_CUERPO
+
+
+def test_clave_de_botones_inventada_por_la_ia_nunca_se_envia(
+    fabrica_cliente, envios, envios_botones, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_INTERACTIVOS_WEBHOOK)
+    cliente = fabrica_cliente(
+        json.dumps(
+            {"respuesta": "Hola", "derivar": False, "adjuntos": [{"tipo": "botones", "clave": "no_existe"}]}
+        ),
+        ruta_recursos=ruta_recursos,
+    )
+    payload = _payload_mensaje_texto("wamid.1", "573001112233", "hola")
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    assert envios.llamadas == [("573001112233", "Hola")]
+    assert envios_botones.llamadas == []
