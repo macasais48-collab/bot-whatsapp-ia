@@ -21,9 +21,11 @@ COPY --chown=appuser:appuser \
     mensajes_enriquecidos.py \
     negocio.md \
     perfil_camilo.md \
+    perfil_tamales.md \
     recursos.py \
     recursos_camilo.json \
     recursos_panaderia.json \
+    recursos_tamales.json \
     webhook.py \
     whatsapp.py \
     ./

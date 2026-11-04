@@ -209,3 +209,100 @@ def test_falla_con_descripcion_de_imagen_vacia(tmp_path):
         cargar_recursos(ruta)
 
     assert "descripcion" in str(info.value)
+
+
+def test_carga_un_catalogo_valido(tmp_path):
+    ruta = _escribir(
+        tmp_path,
+        "recursos.json",
+        {
+            "catalogo": {
+                "tamal_sencillo": {"nombre": "Tamal sencillo", "precio": 8000, "unidad": "unidad"},
+            }
+        },
+    )
+
+    recursos = cargar_recursos(ruta)
+
+    assert recursos["catalogo"]["tamal_sencillo"] == {
+        "nombre": "Tamal sencillo",
+        "precio": 8000,
+        "unidad": "unidad",
+    }
+
+
+@pytest.mark.parametrize(
+    "producto_invalido,fragmento_error",
+    [
+        ({"nombre": "", "precio": 8000, "unidad": "unidad"}, "nombre"),
+        ({"nombre": "Tamal", "precio": 0, "unidad": "unidad"}, "precio"),
+        ({"nombre": "Tamal", "precio": -1000, "unidad": "unidad"}, "precio"),
+        ({"nombre": "Tamal", "precio": 8.5, "unidad": "unidad"}, "precio"),
+        ({"nombre": "Tamal", "precio": "8000", "unidad": "unidad"}, "precio"),
+        ({"nombre": "Tamal", "precio": 8000, "unidad": ""}, "unidad"),
+    ],
+)
+def test_falla_con_producto_de_catalogo_invalido(tmp_path, producto_invalido, fragmento_error):
+    ruta = _escribir(tmp_path, "recursos.json", {"catalogo": {"prueba": producto_invalido}})
+
+    with pytest.raises(ValueError) as info:
+        cargar_recursos(ruta)
+
+    assert fragmento_error in str(info.value)
+
+
+def test_carga_un_domicilio_valido_con_pedido_minimo(tmp_path):
+    ruta = _escribir(
+        tmp_path,
+        "recursos.json",
+        {
+            "domicilio": {
+                "pedido_minimo": 15000,
+                "centro": {"costo": 3000, "tiempo_estimado": "20-30 minutos"},
+            }
+        },
+    )
+
+    recursos = cargar_recursos(ruta)
+
+    assert recursos["domicilio"]["pedido_minimo"] == 15000
+    assert recursos["domicilio"]["centro"] == {"costo": 3000, "tiempo_estimado": "20-30 minutos"}
+
+
+def test_carga_un_domicilio_valido_sin_pedido_minimo(tmp_path):
+    ruta = _escribir(
+        tmp_path,
+        "recursos.json",
+        {"domicilio": {"centro": {"costo": 3000, "tiempo_estimado": "20-30 minutos"}}},
+    )
+
+    recursos = cargar_recursos(ruta)
+
+    assert "pedido_minimo" not in recursos["domicilio"]
+
+
+@pytest.mark.parametrize(
+    "zona_invalida,fragmento_error",
+    [
+        ({"costo": -1, "tiempo_estimado": "20-30 minutos"}, "costo"),
+        ({"costo": 3000.5, "tiempo_estimado": "20-30 minutos"}, "costo"),
+        ({"costo": "3000", "tiempo_estimado": "20-30 minutos"}, "costo"),
+        ({"costo": 3000, "tiempo_estimado": ""}, "tiempo_estimado"),
+    ],
+)
+def test_falla_con_zona_de_domicilio_invalida(tmp_path, zona_invalida, fragmento_error):
+    ruta = _escribir(tmp_path, "recursos.json", {"domicilio": {"centro": zona_invalida}})
+
+    with pytest.raises(ValueError) as info:
+        cargar_recursos(ruta)
+
+    assert fragmento_error in str(info.value)
+
+
+def test_falla_con_pedido_minimo_invalido(tmp_path):
+    ruta = _escribir(tmp_path, "recursos.json", {"domicilio": {"pedido_minimo": -5}})
+
+    with pytest.raises(ValueError) as info:
+        cargar_recursos(ruta)
+
+    assert "pedido_minimo" in str(info.value)

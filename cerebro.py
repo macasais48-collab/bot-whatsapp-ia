@@ -138,12 +138,30 @@ class Cerebro:
             return "Recursos disponibles para adjuntar: ninguno en este perfil."
 
         lineas = ["Recursos disponibles para adjuntar (usa SOLO estas claves cuando ayuden al cliente):"]
-        if "ubicacion" in self._recursos:
+        enlaces = self._recursos.get("enlaces", {})
+        tiene_ubicacion = "ubicacion" in self._recursos
+        # Convención del proyecto: cuando un perfil tiene botón de mapa, su clave es
+        # "mapa". Si además tiene "ubicacion", antes se describían como dos recursos
+        # independientes y la IA a veces solo adjuntaba uno de los dos al preguntarle
+        # por la dirección (ambigüedad real observada en vivo con el perfil "tamales").
+        tiene_mapa = "mapa" in enlaces
+
+        if tiene_ubicacion and tiene_mapa:
+            lineas.append(
+                '- {"tipo": "ubicacion"} y {"tipo": "enlace", "clave": "mapa"}: comparten juntos '
+                "la ubicación del negocio y el botón para ver el mapa. Cuando el cliente pregunte "
+                "dónde queda, pida la dirección o un mapa, incluye SIEMPRE los dos adjuntos juntos, "
+                "nunca uno solo."
+            )
+        elif tiene_ubicacion:
             lineas.append(
                 '- {"tipo": "ubicacion"}: comparte la ubicación del negocio. Úsalo cuando '
                 "el cliente pregunte dónde queda, pida la dirección o un mapa."
             )
-        for clave, enlace in self._recursos.get("enlaces", {}).items():
+
+        for clave, enlace in enlaces.items():
+            if tiene_ubicacion and tiene_mapa and clave == "mapa":
+                continue
             lineas.append(
                 f'- {{"tipo": "enlace", "clave": "{clave}"}}: botón "{enlace["texto_boton"]}".'
             )

@@ -99,6 +99,7 @@ El webhook elige qué información de negocio usar según la variable `PERFIL_NE
 | --- | --- | --- |
 | *(vacío, por defecto)* o `panaderia` | `negocio.md` | Demo del proyecto (Panadería San Roque). |
 | `camilo` | `perfil_camilo.md` | Presenta el servicio de Camilo a dueños de negocio interesados en contratarlo. |
+| `tamales` | `perfil_tamales.md` | Demo para un negocio de tamales con domicilios (Tamales Tolimenses, ficticio). |
 
 Un valor distinto a estos dos hace que el bot **falle al arrancar** con un mensaje claro, en vez de usar un perfil por defecto en silencio. Cada perfil nuevo requiere su propio despliegue (su propio número de WhatsApp), ya que un número solo puede atender un perfil a la vez.
 
@@ -110,7 +111,7 @@ La IA solo puede referirse a esos recursos por su clave, dentro del campo opcion
 
 Las imágenes también se validan al arrancar (archivo existente, formato JPEG/PNG, tamaño ≤5 MB) y se suben a Meta solo cuando hace falta: el `media id` resultante se guarda en un caché dentro del volumen de datos (no en el repositorio) con su fecha de subida, y se resube automáticamente cuando falta o tiene más de 25 días. Si la subida falla, se registra (tipo y código de error, nunca el token) y la respuesta de texto se envía igual.
 
-Botones de respuesta rápida y listas quedan para una fase posterior.
+Botones de respuesta rápida y listas quedan para una fase posterior. El perfil `tamales` ya incluye dos secciones adicionales en su `recursos_<perfil>.json` que esa fase usará — `"catalogo"` (productos con precio y unidad) y `"domicilio"` (zonas con costo y tiempo estimado) — validadas igual que el resto de la lista blanca, pero sin ningún código todavía que las use para tomar pedidos: por ahora el bot solo las puede mencionar en texto libre a través del perfil, nunca calcula nada con ellas.
 
 ### Créditos de fotos
 
@@ -121,6 +122,8 @@ Botones de respuesta rápida y listas quedan para una fase posterior.
 Estas son fotos de demostración, de uso libre, elegidas solo para mostrar la funcionalidad. En un despliegue real para un cliente, se reemplazan por fotos propias del negocio (su pan, sus tortas, su vitrina), definidas en su propio `recursos_<perfil>.json`.
 
 Claves de imagen propuestas para cuando el negocio tenga sus propias fotos: `pandebono`, `almojabana`, `pan_rollo` (o `pan_alinado`), `roscon`, `torta_chocolate` (en uso), `tres_leches`, `vitrina` y `pan_del_dia`.
+
+`recursos/demo/qr_ejemplo.png` (perfil `tamales`) no es una foto: es una imagen generada con Pillow para la demo, con el texto "QR DE EJEMPLO - NO PAGAR" bien visible. Nunca se usa un QR de pago real (ni de Bold ni de ningún otro medio) en este repositorio.
 
 ## Estructura del proyecto
 
@@ -140,9 +143,12 @@ BotWhatsApp/
 │   ├── openai_proveedor.py        # Placeholder para un futuro proveedor OpenAI
 │   └── __init__.py                # Función fábrica según PROVEEDOR_IA
 ├── cerebro.py                     # Prompt, contexto de fecha/festivos, validación de respuesta
-├── recursos.py                    # Valida el JSON de recursos (ubicación, enlaces) de cada perfil
+├── recursos.py                    # Valida el JSON de recursos (ubicación, enlaces, catálogo...) de cada perfil
 ├── recursos_panaderia.json        # Lista blanca de recursos del perfil "panaderia"
 ├── recursos_camilo.json           # Lista blanca de recursos del perfil "camilo"
+├── recursos_tamales.json          # Lista blanca de recursos del perfil "tamales"
+├── perfil_camilo.md               # Información del perfil "camilo"
+├── perfil_tamales.md              # Información del perfil "tamales"
 ├── simulador.py                   # REPL de consola para probar sin WhatsApp
 ├── webhook.py                     # Servidor Flask: verificación, firma, deduplicación, envío
 ├── whatsapp.py                    # Envío de mensajes de texto vía WhatsApp Cloud API
@@ -199,7 +205,7 @@ Configuración del lado de Meta (resumen, sin IDs ni valores reales):
 pytest
 ```
 
-El proyecto tiene **95 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial y la deduplicación.
+El proyecto tiene **111 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial y la deduplicación.
 
 ## Despliegue con Docker
 

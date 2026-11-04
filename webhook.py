@@ -28,10 +28,12 @@ PERFIL_NEGOCIO_POR_DEFECTO = "panaderia"
 PERFILES_NEGOCIO = {
     "panaderia": Path(__file__).parent / "negocio.md",
     "camilo": Path(__file__).parent / "perfil_camilo.md",
+    "tamales": Path(__file__).parent / "perfil_tamales.md",
 }
 RECURSOS_NEGOCIO = {
     "panaderia": Path(__file__).parent / "recursos_panaderia.json",
     "camilo": Path(__file__).parent / "recursos_camilo.json",
+    "tamales": Path(__file__).parent / "recursos_tamales.json",
 }
 
 MENSAJE_DERIVACION_POR_DEFECTO = "Le comunico con una persona de nuestro equipo, que le responderá pronto."

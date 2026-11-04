@@ -1,0 +1,53 @@
+{
+  "ubicacion": {
+    "latitud": 4.733,
+    "longitud": -74.268,
+    "nombre": "Tamales Tolimenses (demo) — ubicación de ejemplo",
+    "direccion": "Ubicación de ejemplo para demostración, Madrid, Cundinamarca"
+  },
+  "enlaces": {
+    "mapa": {
+      "url": "https://www.google.com/maps?q=4.733,-74.268",
+      "texto_boton": "Ver en Google Maps",
+      "descripcion": "Así puede ver nuestra ubicación en el mapa."
+    }
+  },
+  "imagenes": {
+    "qr_ejemplo": {
+      "descripcion": "Este es un QR de ejemplo para la demostración, no es un medio de pago real.",
+      "archivo": "recursos/demo/qr_ejemplo.png"
+    }
+  },
+  "catalogo": {
+    "tamal_sencillo": {
+      "nombre": "Tamal sencillo",
+      "precio": 8000,
+      "unidad": "unidad"
+    },
+    "tamal_especial": {
+      "nombre": "Tamal especial",
+      "precio": 12000,
+      "unidad": "unidad"
+    },
+    "bebida": {
+      "nombre": "Bebida (jugo o gaseosa)",
+      "precio": 3000,
+      "unidad": "unidad"
+    }
+  },
+  "domicilio": {
+    "pedido_minimo": 15000,
+    "centro": {
+      "costo": 3000,
+      "tiempo_estimado": "20-30 minutos"
+    },
+    "la_estacion": {
+      "costo": 4000,
+      "tiempo_estimado": "30-45 minutos"
+    },
+    "zona_rural_cercana": {
+      "costo": 6000,
+      "tiempo_estimado": "45-60 minutos"
+    }
+  }
+}

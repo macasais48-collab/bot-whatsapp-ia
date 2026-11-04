@@ -10,7 +10,8 @@ FIRMAS_IMAGEN_PERMITIDAS = (
     b"\x89PNG\r\n\x1a\n",  # PNG
 )
 
-CLAVES_RAIZ_PERMITIDAS = {"ubicacion", "enlaces", "imagenes"}
+CLAVES_RAIZ_PERMITIDAS = {"ubicacion", "enlaces", "imagenes", "catalogo", "domicilio"}
+CLAVE_PEDIDO_MINIMO = "pedido_minimo"
 
 
 def cargar_recursos(ruta: Path) -> dict:
@@ -36,6 +37,10 @@ def cargar_recursos(ruta: Path) -> dict:
         recursos["enlaces"] = _validar_enlaces(datos["enlaces"], ruta.name)
     if "imagenes" in datos:
         recursos["imagenes"] = _validar_imagenes(datos["imagenes"], ruta.name, ruta.parent)
+    if "catalogo" in datos:
+        recursos["catalogo"] = _validar_catalogo(datos["catalogo"], ruta.name)
+    if "domicilio" in datos:
+        recursos["domicilio"] = _validar_domicilio(datos["domicilio"], ruta.name)
     return recursos
 
 
@@ -144,5 +149,70 @@ def _validar_imagenes(imagenes, nombre_archivo: str, directorio_base: Path) -> d
             )
 
         resultado[clave] = {"clave": clave, "descripcion": descripcion, "archivo": ruta_archivo}
+
+    return resultado
+
+
+def _validar_catalogo(catalogo, nombre_archivo: str) -> dict:
+    if not isinstance(catalogo, dict):
+        raise ValueError(f"{nombre_archivo}: 'catalogo' debe ser un objeto.")
+
+    resultado = {}
+    for clave, producto in catalogo.items():
+        if not isinstance(producto, dict):
+            raise ValueError(f"{nombre_archivo}: 'catalogo.{clave}' debe ser un objeto.")
+
+        nombre = producto.get("nombre")
+        if not isinstance(nombre, str) or not nombre.strip():
+            raise ValueError(f"{nombre_archivo}: 'catalogo.{clave}.nombre' debe ser un texto no vacío.")
+
+        precio = producto.get("precio")
+        if isinstance(precio, bool) or not isinstance(precio, int) or precio <= 0:
+            raise ValueError(
+                f"{nombre_archivo}: 'catalogo.{clave}.precio' debe ser un número entero positivo, "
+                "en pesos colombianos sin decimales."
+            )
+
+        unidad = producto.get("unidad")
+        if not isinstance(unidad, str) or not unidad.strip():
+            raise ValueError(f"{nombre_archivo}: 'catalogo.{clave}.unidad' debe ser un texto no vacío.")
+
+        resultado[clave] = {"nombre": nombre, "precio": precio, "unidad": unidad}
+
+    return resultado
+
+
+def _validar_domicilio(domicilio, nombre_archivo: str) -> dict:
+    if not isinstance(domicilio, dict):
+        raise ValueError(f"{nombre_archivo}: 'domicilio' debe ser un objeto.")
+
+    resultado = {}
+    if CLAVE_PEDIDO_MINIMO in domicilio:
+        pedido_minimo = domicilio[CLAVE_PEDIDO_MINIMO]
+        if isinstance(pedido_minimo, bool) or not isinstance(pedido_minimo, int) or pedido_minimo < 0:
+            raise ValueError(
+                f"{nombre_archivo}: 'domicilio.{CLAVE_PEDIDO_MINIMO}' debe ser un número entero mayor o igual a 0."
+            )
+        resultado[CLAVE_PEDIDO_MINIMO] = pedido_minimo
+
+    for clave, zona in domicilio.items():
+        if clave == CLAVE_PEDIDO_MINIMO:
+            continue
+        if not isinstance(zona, dict):
+            raise ValueError(f"{nombre_archivo}: 'domicilio.{clave}' debe ser un objeto.")
+
+        costo = zona.get("costo")
+        if isinstance(costo, bool) or not isinstance(costo, int) or costo < 0:
+            raise ValueError(
+                f"{nombre_archivo}: 'domicilio.{clave}.costo' debe ser un número entero mayor o igual a 0."
+            )
+
+        tiempo_estimado = zona.get("tiempo_estimado")
+        if not isinstance(tiempo_estimado, str) or not tiempo_estimado.strip():
+            raise ValueError(
+                f"{nombre_archivo}: 'domicilio.{clave}.tiempo_estimado' debe ser un texto no vacío."
+            )
+
+        resultado[clave] = {"costo": costo, "tiempo_estimado": tiempo_estimado}
 
     return resultado

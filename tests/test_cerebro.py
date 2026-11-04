@@ -260,6 +260,34 @@ def test_el_prompt_describe_los_recursos_disponibles_del_perfil(tmp_path):
     assert '"tipo": "enlace", "clave": "mapa"' in sistema
 
 
+def test_el_prompt_instruye_adjuntar_ubicacion_y_mapa_juntos_cuando_ambos_existen(tmp_path):
+    ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA)
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    cerebro.responder("conv1", "hola")
+
+    sistema, _ = fake.ultima_llamada
+    # La ubicación y el botón de mapa deben describirse en una sola instrucción
+    # conjunta, no como dos recursos independientes (eso fue lo que causó que la
+    # IA adjuntara solo uno de los dos en la prueba en vivo del perfil "tamales").
+    assert "SIEMPRE los dos adjuntos juntos" in sistema
+    assert sistema.count('{"tipo": "enlace", "clave": "mapa"}') == 1
+
+
+def test_el_prompt_no_exige_mapa_junto_si_el_perfil_no_tiene_enlace_de_mapa(tmp_path):
+    recursos_sin_mapa = {"ubicacion": RECURSOS_DE_PRUEBA["ubicacion"]}
+    ruta_recursos = _escribir_recursos(tmp_path, recursos_sin_mapa)
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=ruta_recursos)
+
+    cerebro.responder("conv1", "hola")
+
+    sistema, _ = fake.ultima_llamada
+    assert '"tipo": "ubicacion"' in sistema
+    assert "SIEMPRE los dos adjuntos juntos" not in sistema
+
+
 def test_adjunto_de_ubicacion_valido_se_resuelve_con_los_datos_del_perfil(tmp_path):
     ruta_recursos = _escribir_recursos(tmp_path, RECURSOS_DE_PRUEBA)
     fake = FakeProveedor(
