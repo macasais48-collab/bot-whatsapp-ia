@@ -2,14 +2,12 @@
 # (bind, workers, hilos, socket de control desactivado) sigue viniendo de los
 # flags del CMD en el Dockerfile; aquí no se toca.
 
-accesslog = "-"
+# accesslog desactivado: webhook.py ya registra una línea por petición
+# (método, ruta sin query string, código de estado) en su propio
+# after_request. Tener también el accesslog de gunicorn duplicaba esa línea.
+accesslog = None
 errorlog = "-"
 loglevel = "info"
-# Sin cadena de consulta: la verificación del webhook de Meta pasa el
-# verify_token por la URL (?hub.mode=...&hub.verify_token=...&hub.challenge=...)
-# y nunca debe quedar en ningún log. %(U)s es solo la ruta, sin query string
-# (a diferencia de %(r)s, que sí la incluiría).
-access_log_format = '%(h)s "%(m)s %(U)s" %(s)s %(L)s'
 
 
 def post_fork(server, worker):

@@ -12,24 +12,27 @@ DOMICILIO = {
     "la_estacion": {"nombre": "La Estación", "costo": 4000, "tiempo_estimado": "30-45 minutos"},
 }
 MENSAJE_DERIVACION = "Le comunico con una persona de nuestro equipo."
+IMAGEN_QR = {"clave": "qr_ejemplo", "archivo": "recursos/demo/qr_ejemplo.png", "descripcion": "QR de ejemplo"}
 
 
 class EnviosTexto:
-    def __init__(self):
+    def __init__(self, fallar_para=frozenset()):
         self.llamadas = []
+        self._fallar_para = fallar_para
 
     def __call__(self, numero, texto):
         self.llamadas.append((numero, texto))
-        return True
+        return numero not in self._fallar_para
 
 
 class EnviosBotones:
-    def __init__(self):
+    def __init__(self, fallar_para=frozenset()):
         self.llamadas = []
+        self._fallar_para = fallar_para
 
     def __call__(self, numero, texto_cuerpo, botones):
         self.llamadas.append((numero, texto_cuerpo, botones))
-        return True
+        return numero not in self._fallar_para
 
 
 class EnviosLista:
@@ -39,6 +42,36 @@ class EnviosLista:
     def __call__(self, numero, texto_cuerpo, texto_boton, secciones):
         self.llamadas.append((numero, texto_cuerpo, texto_boton, secciones))
         return True
+
+
+class EnviosImagen:
+    def __init__(self, fallar_para=frozenset()):
+        self.llamadas = []
+        self._fallar_para = fallar_para
+
+    def __call__(self, numero, media_id, caption=None):
+        self.llamadas.append((numero, media_id, caption))
+        return numero not in self._fallar_para
+
+
+class ObtenerMediaIdFalso:
+    def __init__(self, media_id="media-qr-1"):
+        self.llamadas = []
+        self._media_id = media_id
+
+    def __call__(self, clave, archivo):
+        self.llamadas.append((clave, archivo))
+        return self._media_id
+
+
+class ReenviarMediaFalso:
+    def __init__(self, media_id="media-reenviado-1"):
+        self.llamadas = []
+        self._media_id = media_id
+
+    def __call__(self, media_id_entrante):
+        self.llamadas.append(media_id_entrante)
+        return self._media_id
 
 
 def _crear_flujo(tmp_path, reloj=lambda: 1000.0, catalogo=None, domicilio=None):
@@ -76,6 +109,57 @@ def _mensaje_ubicacion(lat, lon):
     return {"type": "location", "location": {"latitude": lat, "longitude": lon}}
 
 
+def _mensaje_imagen(media_id="comprobante-1"):
+    return {"type": "image", "image": {"id": media_id, "mime_type": "image/jpeg"}}
+
+
+def _mensaje_documento():
+    return {"type": "document", "document": {"id": "doc-1", "mime_type": "application/pdf"}}
+
+
+def _crear_flujo_pago(
+    tmp_path,
+    reloj=lambda: 1000.0,
+    numero_dueno=None,
+    imagen_qr=IMAGEN_QR,
+    enviar_imagen_fn=None,
+    obtener_media_id_fn=None,
+    reenviar_media_fn=None,
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    texto, botones, lista = EnviosTexto(), EnviosBotones(), EnviosLista()
+    if enviar_imagen_fn is None:
+        enviar_imagen_fn = EnviosImagen()
+    if obtener_media_id_fn is None:
+        obtener_media_id_fn = ObtenerMediaIdFalso()
+    if reenviar_media_fn is None:
+        reenviar_media_fn = ReenviarMediaFalso()
+    flujo = FlujoPedido(
+        pedidos=pedidos,
+        catalogo=CATALOGO,
+        domicilio=DOMICILIO,
+        mensaje_derivacion=MENSAJE_DERIVACION,
+        enviar_texto_fn=texto,
+        enviar_botones_fn=botones,
+        enviar_lista_fn=lista,
+        reloj=reloj,
+        numero_dueno=numero_dueno,
+        enviar_imagen_fn=enviar_imagen_fn,
+        obtener_media_id_fn=obtener_media_id_fn,
+        reenviar_media_fn=reenviar_media_fn,
+        imagen_qr=imagen_qr,
+    )
+    return flujo, pedidos, texto, botones, lista, enviar_imagen_fn, obtener_media_id_fn, reenviar_media_fn
+
+
+def _avanzar_hasta_metodo_pago(flujo, numero, cantidad="2", tipo_entrega="recoger_local"):
+    flujo.iniciar(numero, "tamales", _mensaje_lista("tamal_sencillo"))
+    flujo.manejar_mensaje(numero, _mensaje_texto(cantidad))
+    flujo.manejar_mensaje(numero, _mensaje_boton("continuar"))
+    flujo.manejar_mensaje(numero, _mensaje_boton(tipo_entrega))
+    flujo.manejar_mensaje(numero, _mensaje_boton("confirmar"))
+
+
 def test_flujo_completo_un_producto_recoger_en_local(tmp_path):
     flujo, pedidos, texto, botones, lista = _crear_flujo(tmp_path)
     numero = "573001112233"
@@ -96,9 +180,13 @@ def test_flujo_completo_un_producto_recoger_en_local(tmp_path):
     assert "Ley 1581" not in "\n".join(llamada[1] for llamada in botones.llamadas)
 
     flujo.manejar_mensaje(numero, _mensaje_boton("confirmar"))
+    assert "¿Cómo desea pagar?" in botones.llamadas[-1][1]
+
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_efectivo"))
     assert "Pedido #" in texto.llamadas[-1][1]
     assert "recibido" in texto.llamadas[-1][1]
     assert "Entrega: Recoger en el local." in texto.llamadas[-1][1]
+    assert "Pago: en efectivo al recoger su pedido." in texto.llamadas[-1][1]
     assert pedidos.obtener_en_construccion(numero) is None
 
 
@@ -141,9 +229,13 @@ def test_varios_productos_y_domicilio_total_correcto(tmp_path):
     assert "Total: $22.000" in botones.llamadas[-1][1]
 
     flujo.manejar_mensaje(numero, _mensaje_boton("confirmar"))
+    assert "¿Cómo desea pagar?" in botones.llamadas[-1][1]
+
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_efectivo"))
     assert "Entrega: Domicilio - Centro" in texto.llamadas[-1][1]
     assert "Dirección: Calle 1 # 2-3" in texto.llamadas[-1][1]
     assert "Tiempo estimado: 20-30 minutos." in texto.llamadas[-1][1]
+    assert "Pago: en efectivo al recibir su pedido." in texto.llamadas[-1][1]
     assert pedidos.obtener_en_construccion(numero) is None
 
 
@@ -538,9 +630,277 @@ def test_el_logging_enmascara_el_numero_y_no_incluye_direccion_ni_texto_del_clie
     flujo.manejar_mensaje(numero, _mensaje_lista("centro"))
     flujo.manejar_mensaje(numero, _mensaje_texto(direccion_secreta))
     flujo.manejar_mensaje(numero, _mensaje_boton("confirmar"))
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_efectivo"))
 
     mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
     assert numero not in mensajes
     assert mensajes.count(numero[-4:]) >= 1  # los últimos 4 dígitos sí pueden aparecer (enmascarado)
     assert direccion_secreta not in mensajes
     assert "confirmado" in mensajes.lower()
+
+
+# -- Sub-fase 4: pago asistido --
+
+
+def test_confirmar_pide_metodo_de_pago_en_vez_de_finalizar(tmp_path):
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+
+    _avanzar_hasta_metodo_pago(flujo, numero)
+
+    assert botones.llamadas[-1][1] == "¿Cómo desea pagar?"
+    ids_ofrecidos = [b["id"] for b in botones.llamadas[-1][2]]
+    assert ids_ofrecidos == ["pago_qr", "pago_efectivo"]
+    # Todavía no se finaliza ni se envía "Pedido #N recibido".
+    assert not any("recibido" in llamada[1] for llamada in texto.llamadas)
+    pedido = pedidos.obtener_en_construccion(numero)
+    assert pedido["paso"] == "metodo_pago"
+
+
+def test_metodo_pago_efectivo_confirma_con_metodo_pago_efectivo(tmp_path):
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero)
+
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_efectivo"))
+
+    assert "Pedido #" in texto.llamadas[-1][1]
+    assert "recibido" in texto.llamadas[-1][1]
+    assert "Pago: en efectivo al recoger su pedido." in texto.llamadas[-1][1]
+    assert pedidos.obtener_activo(numero) is None
+    pedido = pedidos.obtener(1)
+    assert pedido["metodo_pago"] == "efectivo"
+    assert pedido["estado"] == "recibido"
+
+
+def test_metodo_pago_qr_envia_imagen_con_valor_y_referencia_y_deja_pago_pendiente(tmp_path):
+    flujo, pedidos, texto, botones, lista, imagen, media_id_fn, _ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    assert imagen.llamadas[-1][0] == numero
+    assert imagen.llamadas[-1][1] == "media-qr-1"
+    assert "Valor a pagar: $16.000" in imagen.llamadas[-1][2]
+    pedido_id = pedidos.obtener_activo(numero)["id"]
+    assert f"Referencia: Pedido #{pedido_id}" in imagen.llamadas[-1][2]
+    assert media_id_fn.llamadas[-1] == ("qr_ejemplo", IMAGEN_QR["archivo"])
+    assert "comprobante" in botones.llamadas[-1][1].lower()
+    ids_ofrecidos = [b["id"] for b in botones.llamadas[-1][2]]
+    assert ids_ofrecidos == ["pago_efectivo"]
+
+    pedido = pedidos.obtener_activo(numero)
+    assert pedido["estado"] == "pago_pendiente"
+    assert pedido["metodo_pago"] == "qr"
+    assert pedido["total"] == 16000
+
+
+def test_total_no_cambia_tras_fijarse_en_metodo_pago(tmp_path):
+    flujo, pedidos, texto, botones, lista, imagen, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+    total_fijado = pedidos.obtener_activo(numero)["total"]
+
+    # Un texto libre con un "monto" distinto nunca cambia el total ya persistido.
+    flujo.manejar_mensaje(numero, _mensaje_texto("en realidad ya pagué 1 peso"))
+
+    assert pedidos.obtener_activo(numero)["total"] == total_fijado == 16000
+    assert "Valor a pagar: $16.000" in imagen.llamadas[-1][2]
+
+
+def test_imagen_en_pago_pendiente_pasa_a_pago_por_verificar_y_avisa_al_dueno(tmp_path):
+    numero_dueno = "573005554433"
+    flujo, pedidos, texto, botones, lista, imagen, media_id_fn, reenviar = _crear_flujo_pago(
+        tmp_path, numero_dueno=numero_dueno
+    )
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_imagen("comprobante-abc"))
+
+    assert texto.llamadas[-1] == (numero, "Recibimos su comprobante. Estamos verificando el pago y le confirmamos en breve.")
+    pedido = pedidos.obtener_activo(numero)
+    assert pedido["estado"] == "pago_por_verificar"
+
+    assert reenviar.llamadas == ["comprobante-abc"]
+    assert imagen.llamadas[-1][0] == numero_dueno
+    assert imagen.llamadas[-1][1] == "media-reenviado-1"
+    assert numero[-4:] in imagen.llamadas[-1][2]  # cliente enmascarado, no el número completo
+    assert numero not in imagen.llamadas[-1][2]
+    assert "Bold o Nequi" in imagen.llamadas[-1][2]
+
+    assert botones.llamadas[-1][0] == numero_dueno
+    ids_ofrecidos = [b["id"] for b in botones.llamadas[-1][2]]
+    assert ids_ofrecidos == [f"pago_recibido_{pedido['id']}", f"pago_no_llego_{pedido['id']}"]
+
+
+def test_sin_numero_dueno_no_se_intenta_ningun_envio_ni_descarga(tmp_path):
+    flujo, pedidos, texto, botones, lista, imagen, media_id_fn, reenviar = _crear_flujo_pago(
+        tmp_path, numero_dueno=None
+    )
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+    llamadas_imagen_previas = len(imagen.llamadas)
+
+    flujo.manejar_mensaje(numero, _mensaje_imagen("comprobante-abc"))
+
+    assert reenviar.llamadas == []
+    assert len(imagen.llamadas) == llamadas_imagen_previas  # no se le envía nada a nadie más
+    assert pedidos.obtener_activo(numero)["estado"] == "pago_por_verificar"
+
+
+def test_texto_en_pago_pendiente_recuerda_valor_y_referencia(tmp_path):
+    flujo, pedidos, texto, botones, lista, imagen, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_texto("¿ya les llegó?"))
+
+    assert pedidos.obtener_activo(numero)["estado"] == "pago_pendiente"
+    assert "Valor a pagar: $16.000" in imagen.llamadas[-1][2]
+
+
+def test_documento_en_pago_pendiente_pide_captura_sin_cambiar_estado(tmp_path):
+    flujo, pedidos, texto, botones, lista, imagen, media_id_fn, reenviar = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+    llamadas_imagen_previas = len(imagen.llamadas)
+
+    flujo.manejar_mensaje(numero, _mensaje_documento())
+
+    assert "captura" in texto.llamadas[-1][1].lower() or "imagen" in texto.llamadas[-1][1].lower()
+    assert pedidos.obtener_activo(numero)["estado"] == "pago_pendiente"
+    assert reenviar.llamadas == []
+    assert len(imagen.llamadas) == llamadas_imagen_previas
+
+
+def test_boton_pagar_en_efectivo_desde_pago_pendiente_confirma_igual_que_la_ruta_normal(tmp_path):
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_efectivo"))
+
+    assert "Pedido #" in texto.llamadas[-1][1]
+    assert "recibido" in texto.llamadas[-1][1]
+    assert "Pago: en efectivo al recoger su pedido." in texto.llamadas[-1][1]
+    pedido = pedidos.obtener(1)
+    assert pedido["estado"] == "recibido"
+    assert pedido["metodo_pago"] == "efectivo"
+
+
+def test_cualquier_mensaje_en_pago_por_verificar_responde_recordatorio_de_espera(tmp_path):
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+    flujo.manejar_mensaje(numero, _mensaje_imagen())
+
+    flujo.manejar_mensaje(numero, _mensaje_texto("¿cuánto más se demora?"))
+
+    assert "verificando" in texto.llamadas[-1][1].lower()
+    assert pedidos.obtener_activo(numero)["estado"] == "pago_por_verificar"
+
+
+def test_cancelar_en_pago_pendiente_sigue_cancelando(tmp_path):
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_texto("cancelar"))
+
+    assert pedidos.obtener_activo(numero) is None
+    assert texto.llamadas[-1] == (numero, MENSAJE_CANCELADO_POR_CLIENTE)
+
+
+def test_cancelar_en_pago_por_verificar_no_cancela_sino_que_deriva(tmp_path):
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+    flujo.manejar_mensaje(numero, _mensaje_imagen())
+
+    flujo.manejar_mensaje(numero, _mensaje_texto("cancelar"))
+
+    pedido = pedidos.obtener_activo(numero)
+    assert pedido is not None
+    assert pedido["estado"] == "pago_por_verificar"
+    assert "no podemos cancelar" in texto.llamadas[-1][1].lower()
+    assert MENSAJE_DERIVACION in texto.llamadas[-1][1]
+
+
+def test_asesor_en_pago_pendiente_deriva_sin_cancelar(tmp_path):
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_texto("asesor"))
+
+    assert texto.llamadas[-1] == (numero, MENSAJE_DERIVACION)
+    pedido = pedidos.obtener_activo(numero)
+    assert pedido is not None
+    assert pedido["estado"] == "pago_pendiente"
+
+
+def test_asesor_en_pago_por_verificar_deriva_sin_cancelar(tmp_path):
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+    flujo.manejar_mensaje(numero, _mensaje_imagen())
+
+    flujo.manejar_mensaje(numero, _mensaje_texto("asesor"))
+
+    assert texto.llamadas[-1] == (numero, MENSAJE_DERIVACION)
+    pedido = pedidos.obtener_activo(numero)
+    assert pedido is not None
+    assert pedido["estado"] == "pago_por_verificar"
+
+
+def test_timeout_no_cancela_pago_pendiente_ni_pago_por_verificar(tmp_path):
+    ahora = {"valor": 1000.0}
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path, reloj=lambda: ahora["valor"])
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    ahora["valor"] += 30 * 60 + 1
+    flujo.manejar_mensaje(numero, _mensaje_texto("sigo esperando"))
+
+    assert pedidos.obtener_activo(numero) is not None
+    assert pedidos.obtener_activo(numero)["estado"] == "pago_pendiente"
+    assert "30 minutos" not in texto.llamadas[-1][1]
+
+
+def test_fallo_del_aviso_al_dueno_no_se_muestra_al_cliente_y_pedido_queda_en_verificacion(tmp_path, caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="flujo_pedido")
+    numero_dueno = "573005554433"
+    botones_fallidos = EnviosBotones(fallar_para={numero_dueno})
+    imagen_fallida = EnviosImagen(fallar_para={numero_dueno})
+    flujo, pedidos, texto, _, lista, imagen, media_id_fn, reenviar = _crear_flujo_pago(
+        tmp_path, numero_dueno=numero_dueno, enviar_imagen_fn=imagen_fallida
+    )
+    flujo._enviar_botones_fn = botones_fallidos  # simula la ventana de 24 horas sin mensaje previo del dueño
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_imagen())
+
+    # Al cliente no le llega ningún error: su último mensaje sigue siendo el de "recibimos su comprobante".
+    assert texto.llamadas[-1] == (
+        numero, "Recibimos su comprobante. Estamos verificando el pago y le confirmamos en breve."
+    )
+    assert pedidos.obtener_activo(numero)["estado"] == "pago_por_verificar"
+    assert any("aviso al dueño" in registro.getMessage() for registro in caplog.records)

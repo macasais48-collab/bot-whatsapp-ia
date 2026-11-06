@@ -6,12 +6,13 @@ from pathlib import Path
 
 from flask import Flask, Response, request
 
+import pago_pedido
 from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
 from env import obtener_env
 from flujo_pedido import ID_BOTON_HACER_PEDIDO, FlujoPedido
 from llm import crear_proveedor_ia
-from media_cache import obtener_media_id
+from media_cache import obtener_media_id, reenviar_media_entrante
 from mensajes_enriquecidos import (
     enviar_botones,
     enviar_cta_url,
@@ -21,7 +22,7 @@ from mensajes_enriquecidos import (
 )
 from pedidos import Pedidos
 from recursos import LIMITE_CUERPO_INTERACTIVO, cargar_recursos
-from telefono import enmascarar_numero
+from telefono import enmascarar_numero, normalizar_numero
 from whatsapp import enviar_texto
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,9 @@ MENSAJE_DERIVACION_POR_DEFECTO = "Le comunico con una persona de nuestro equipo,
 MENSAJE_SOLO_TEXTO = (
     "Por ahora solo puedo atender mensajes de texto. "
     "Escríbeme tu pregunta y con gusto te ayudo."
+)
+MENSAJE_DUENO_RECORDATORIO = (
+    "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar."
 )
 
 MARCADOR_MENSAJE_DERIVACION = "## Mensaje de derivación"
@@ -132,10 +136,12 @@ def crear_app(
     enviar_botones_fn=enviar_botones,
     enviar_lista_fn=enviar_lista,
     obtener_media_id_fn=obtener_media_id,
+    reenviar_media_fn=reenviar_media_entrante,
     recursos: dict | None = None,
     pedidos: Pedidos | None = None,
     perfil: str | None = None,
     mensaje_derivacion: str | None = None,
+    numero_dueno: str | None = None,
     reloj=time.time,
 ) -> Flask:
     app = Flask(__name__)
@@ -146,6 +152,10 @@ def crear_app(
         pedidos = Pedidos()
     if perfil is None:
         perfil = _resolver_clave_perfil()
+    if numero_dueno is None:
+        valor_numero_dueno = obtener_env("NUMERO_DUENO")
+        numero_dueno = normalizar_numero(valor_numero_dueno) if valor_numero_dueno else None
+    numero_dueno = numero_dueno or None
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = _resolver_ruta_negocio()
     if cerebro is None:
@@ -172,13 +182,23 @@ def crear_app(
         enviar_botones_fn=enviar_botones_fn,
         enviar_lista_fn=enviar_lista_fn,
         reloj=reloj,
+        numero_dueno=numero_dueno,
+        enviar_imagen_fn=enviar_imagen_fn,
+        obtener_media_id_fn=obtener_media_id_fn,
+        reenviar_media_fn=reenviar_media_fn,
+        imagen_qr=recursos.get("imagenes", {}).get("qr_ejemplo"),
     )
 
     @app.after_request
     def _registrar_peticion(respuesta):
         # request.path nunca incluye la cadena de consulta (hub.verify_token,
         # hub.challenge quedan fuera), a diferencia del log por defecto de Werkzeug.
-        logger.info("%s %s -> %s", request.method, request.path, respuesta.status_code)
+        # /salud no se registra: lo golpea el healthcheck de Docker cada 30
+        # segundos y no aporta nada para depurar un problema real. Esta es la
+        # única línea por petición (el accesslog propio de gunicorn está
+        # desactivado en gunicorn.conf.py para no duplicarla).
+        if request.path != "/salud":
+            logger.info("%s %s -> %s", request.method, request.path, respuesta.status_code)
         return respuesta
 
     def _procesar_mensaje(mensaje: dict) -> None:
@@ -204,8 +224,13 @@ def crear_app(
             logger.info("Mensaje duplicado ignorado (remitente=%s)", numero_enmascarado)
             return
 
-        pedido_en_construccion = pedidos.obtener_en_construccion(numero_remitente)
-        if pedido_en_construccion is not None:
+        if numero_dueno and numero_remitente == numero_dueno:
+            logger.info("Mensaje del dueño recibido.")
+            _procesar_respuesta_dueno(mensaje)
+            return
+
+        pedido_activo = pedidos.obtener_activo(numero_remitente)
+        if pedido_activo is not None:
             logger.info("Mensaje atendido por el flujo de pedido (remitente=%s)", numero_enmascarado)
             flujo_pedido.manejar_mensaje(numero_remitente, mensaje)
             return
@@ -269,6 +294,36 @@ def crear_app(
                 if adjunto is adjunto_interactivo:
                     continue
                 _enviar_adjunto(numero_remitente, adjunto)
+
+    def _id_pedido_desde_boton(id_boton: str, prefijo: str) -> int | None:
+        try:
+            return int(id_boton[len(prefijo):])
+        except ValueError:
+            return None
+
+    def _procesar_respuesta_dueno(mensaje: dict) -> None:
+        # Mensajes del dueño NUNCA llegan a cerebro.responder ni a flujo_pedido:
+        # solo se reconocen los botones de pago [Pago recibido]/[No ha llegado];
+        # cualquier otra cosa (un "hola" para abrir la ventana de 24 horas, un
+        # botón desconocido) recibe un texto fijo recordándole qué es este número.
+        ahora = reloj()
+        interactivo = mensaje.get("interactive", {})
+        if interactivo.get("type") == "button_reply":
+            id_boton = interactivo.get("button_reply", {}).get("id", "")
+            if id_boton.startswith(pago_pedido.PREFIJO_BOTON_PAGO_RECIBIDO):
+                pedido_id = _id_pedido_desde_boton(id_boton, pago_pedido.PREFIJO_BOTON_PAGO_RECIBIDO)
+                if pedido_id is not None:
+                    resultado = pago_pedido.confirmar_pago(pedidos, pedido_id, ahora, enviar_texto_fn)
+                    enviar_texto_fn(numero_dueno, resultado)
+                    return
+            elif id_boton.startswith(pago_pedido.PREFIJO_BOTON_PAGO_NO_LLEGO):
+                pedido_id = _id_pedido_desde_boton(id_boton, pago_pedido.PREFIJO_BOTON_PAGO_NO_LLEGO)
+                if pedido_id is not None:
+                    resultado = pago_pedido.rechazar_pago(pedidos, pedido_id, ahora, enviar_texto_fn)
+                    enviar_texto_fn(numero_dueno, resultado)
+                    return
+
+        enviar_texto_fn(numero_dueno, MENSAJE_DUENO_RECORDATORIO)
 
     def _enviar_interactivo_con_texto(numero: str, texto: str, adjunto: dict) -> None:
         tipo = adjunto["tipo"]

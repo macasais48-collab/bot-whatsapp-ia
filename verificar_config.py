@@ -1,5 +1,7 @@
 from dotenv import dotenv_values
 
+from telefono import normalizar_numero, numero_parece_valido
+
 VARIABLES_ESPERADAS = [
     "PROVEEDOR_IA",
     "ANTHROPIC_API_KEY",
@@ -12,6 +14,7 @@ VARIABLES_ESPERADAS = [
     "GRAPH_API_VERSION",
     "WHATSAPP_WABA_ID",
     "PUERTO",
+    "NUMERO_DUENO",
 ]
 
 
@@ -19,7 +22,13 @@ def generar_reporte(valores: dict) -> str:
     lineas = []
     for nombre in VARIABLES_ESPERADAS:
         valor = (valores.get(nombre) or "").strip()
-        estado = "con valor" if valor else "VACÍO"
+        if not valor:
+            lineas.append(f"{nombre}: VACÍO")
+            continue
+        estado = "con valor"
+        if nombre == "NUMERO_DUENO" and not numero_parece_valido(normalizar_numero(valor)):
+            estado += " (formato no parece válido; revise que sea solo el número con código de " \
+                "país, sin '+', espacios ni guiones)"
         lineas.append(f"{nombre}: {estado}")
     return "\n".join(lineas)
 

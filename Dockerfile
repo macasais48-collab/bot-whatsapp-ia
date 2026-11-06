@@ -17,11 +17,13 @@ COPY --chown=appuser:appuser \
     cerebro.py \
     env.py \
     flujo_pedido.py \
+    gestionar_pedido.py \
     gunicorn.conf.py \
     historial.py \
     media_cache.py \
     mensajes_enriquecidos.py \
     negocio.md \
+    pago_pedido.py \
     pedidos.py \
     perfil_camilo.md \
     perfil_tamales.md \

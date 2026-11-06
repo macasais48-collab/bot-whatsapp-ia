@@ -57,3 +57,24 @@ def test_el_reporte_incluye_todas_las_variables_esperadas():
 
     for nombre in VARIABLES_ESPERADAS:
         assert nombre in reporte
+
+
+def test_numero_dueno_con_formato_valido_no_lleva_advertencia():
+    reporte = generar_reporte({"NUMERO_DUENO": "573001112233"})
+
+    assert "NUMERO_DUENO: con valor" in reporte
+    assert "no parece válido" not in reporte
+
+
+def test_numero_dueno_con_formato_invalido_avisa_sin_mostrar_el_valor():
+    reporte = generar_reporte({"NUMERO_DUENO": "123"})
+
+    assert "NUMERO_DUENO: con valor (formato no parece válido" in reporte
+    assert "123" not in reporte.split("NUMERO_DUENO:")[1].split("\n")[0]
+
+
+def test_numero_dueno_con_mas_espacios_y_guiones_se_normaliza_antes_de_validar():
+    reporte = generar_reporte({"NUMERO_DUENO": "+57 300 111 2233"})
+
+    assert "NUMERO_DUENO: con valor" in reporte
+    assert "no parece válido" not in reporte

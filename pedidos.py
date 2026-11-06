@@ -9,6 +9,11 @@ RUTA_BD_POR_DEFECTO = Path(__file__).parent / "bot_whatsapp.db"
 ESTADO_EN_CONSTRUCCION = "en_construccion"
 ESTADO_RECIBIDO = "recibido"
 ESTADO_CANCELADO = "cancelado"
+ESTADO_PAGO_PENDIENTE = "pago_pendiente"
+ESTADO_PAGO_POR_VERIFICAR = "pago_por_verificar"
+ESTADO_PAGADO = "pagado"
+
+ESTADOS_ACTIVOS = (ESTADO_EN_CONSTRUCCION, ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_POR_VERIFICAR)
 
 PASO_INICIAL = "producto"
 
@@ -39,6 +44,7 @@ class Pedidos:
                         latitud REAL,
                         longitud REAL,
                         total INTEGER,
+                        metodo_pago TEXT,
                         creado_en REAL NOT NULL,
                         actualizado_en REAL NOT NULL
                     )
@@ -57,6 +63,15 @@ class Pedidos:
                     )
                     """
                 )
+                # Migración defensiva: una base ya creada antes de la sub-fase 4 (pago
+                # asistido) tiene la tabla 'pedidos' sin 'metodo_pago' — CREATE TABLE IF
+                # NOT EXISTS no la modifica, así que se agrega la columna si falta, sin
+                # tocar los pedidos ya guardados.
+                columnas_existentes = {
+                    fila[1] for fila in conexion.execute("PRAGMA table_info(pedidos)").fetchall()
+                }
+                if "metodo_pago" not in columnas_existentes:
+                    conexion.execute("ALTER TABLE pedidos ADD COLUMN metodo_pago TEXT")
 
     def _fila_a_dict(self, fila) -> dict:
         (
@@ -73,6 +88,7 @@ class Pedidos:
             latitud,
             longitud,
             total,
+            metodo_pago,
             creado_en,
             actualizado_en,
         ) = fila
@@ -98,6 +114,7 @@ class Pedidos:
             "latitud": latitud,
             "longitud": longitud,
             "total": total,
+            "metodo_pago": metodo_pago,
             "creado_en": creado_en,
             "actualizado_en": actualizado_en,
             "items": [
@@ -112,13 +129,17 @@ class Pedidos:
             ],
         }
 
+    _COLUMNAS_PEDIDO = (
+        "id, numero_cliente, perfil, estado, paso, producto_pendiente, "
+        "consentimiento_aceptado, tipo_entrega, zona_domicilio, direccion_texto, "
+        "latitud, longitud, total, metodo_pago, creado_en, actualizado_en"
+    )
+
     def obtener_en_construccion(self, numero_cliente: str) -> dict | None:
         with closing(sqlite3.connect(self._ruta_bd)) as conexion:
             fila = conexion.execute(
-                """
-                SELECT id, numero_cliente, perfil, estado, paso, producto_pendiente,
-                       consentimiento_aceptado, tipo_entrega, zona_domicilio, direccion_texto,
-                       latitud, longitud, total, creado_en, actualizado_en
+                f"""
+                SELECT {self._COLUMNAS_PEDIDO}
                 FROM pedidos
                 WHERE numero_cliente = ? AND estado = ?
                 ORDER BY id DESC LIMIT 1
@@ -128,6 +149,46 @@ class Pedidos:
         if fila is None:
             return None
         return self._fila_a_dict(fila)
+
+    def obtener_activo(self, numero_cliente: str) -> dict | None:
+        marcadores = ", ".join("?" for _ in ESTADOS_ACTIVOS)
+        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
+            fila = conexion.execute(
+                f"""
+                SELECT {self._COLUMNAS_PEDIDO}
+                FROM pedidos
+                WHERE numero_cliente = ? AND estado IN ({marcadores})
+                ORDER BY id DESC LIMIT 1
+                """,
+                (numero_cliente, *ESTADOS_ACTIVOS),
+            ).fetchone()
+        if fila is None:
+            return None
+        return self._fila_a_dict(fila)
+
+    def obtener(self, pedido_id: int) -> dict | None:
+        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
+            fila = conexion.execute(
+                f"SELECT {self._COLUMNAS_PEDIDO} FROM pedidos WHERE id = ?",
+                (pedido_id,),
+            ).fetchone()
+        if fila is None:
+            return None
+        return self._fila_a_dict(fila)
+
+    def listar_por_estados(self, estados: list[str]) -> list[dict]:
+        marcadores = ", ".join("?" for _ in estados)
+        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
+            filas = conexion.execute(
+                f"""
+                SELECT {self._COLUMNAS_PEDIDO}
+                FROM pedidos
+                WHERE estado IN ({marcadores})
+                ORDER BY id ASC
+                """,
+                tuple(estados),
+            ).fetchall()
+        return [self._fila_a_dict(fila) for fila in filas]
 
     def crear_en_construccion(self, numero_cliente: str, perfil: str, ahora: float) -> int:
         with closing(sqlite3.connect(self._ruta_bd)) as conexion:
@@ -261,4 +322,46 @@ class Pedidos:
                 conexion.execute(
                     "UPDATE pedidos SET estado = ?, actualizado_en = ? WHERE id = ?",
                     (ESTADO_CANCELADO, ahora, pedido_id),
+                )
+
+    def confirmar_efectivo(self, pedido_id: int, total: int, ahora: float) -> None:
+        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
+            with conexion:
+                conexion.execute(
+                    "UPDATE pedidos SET estado = ?, total = ?, metodo_pago = 'efectivo', "
+                    "actualizado_en = ? WHERE id = ?",
+                    (ESTADO_RECIBIDO, total, ahora, pedido_id),
+                )
+
+    def marcar_pago_pendiente(self, pedido_id: int, total: int, ahora: float) -> None:
+        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
+            with conexion:
+                conexion.execute(
+                    "UPDATE pedidos SET estado = ?, total = ?, metodo_pago = 'qr', paso = ?, "
+                    "actualizado_en = ? WHERE id = ?",
+                    (ESTADO_PAGO_PENDIENTE, total, "pago_pendiente", ahora, pedido_id),
+                )
+
+    def marcar_pago_por_verificar(self, pedido_id: int, ahora: float) -> None:
+        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
+            with conexion:
+                conexion.execute(
+                    "UPDATE pedidos SET estado = ?, paso = ?, actualizado_en = ? WHERE id = ?",
+                    (ESTADO_PAGO_POR_VERIFICAR, "pago_por_verificar", ahora, pedido_id),
+                )
+
+    def marcar_pagado(self, pedido_id: int, ahora: float) -> None:
+        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
+            with conexion:
+                conexion.execute(
+                    "UPDATE pedidos SET estado = ?, actualizado_en = ? WHERE id = ?",
+                    (ESTADO_PAGADO, ahora, pedido_id),
+                )
+
+    def volver_a_pago_pendiente(self, pedido_id: int, ahora: float) -> None:
+        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
+            with conexion:
+                conexion.execute(
+                    "UPDATE pedidos SET estado = ?, paso = ?, actualizado_en = ? WHERE id = ?",
+                    (ESTADO_PAGO_PENDIENTE, "pago_pendiente", ahora, pedido_id),
                 )

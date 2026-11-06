@@ -32,7 +32,14 @@ def test_dockerfile_copia_los_modulos_de_la_toma_de_pedidos():
     ruta_dockerfile = Path(__file__).parent.parent / "Dockerfile"
     contenido = ruta_dockerfile.read_text(encoding="utf-8")
 
-    for nombre_archivo in ("pedidos.py", "flujo_pedido.py", "telefono.py", "gunicorn.conf.py"):
+    for nombre_archivo in (
+        "pedidos.py",
+        "flujo_pedido.py",
+        "telefono.py",
+        "gunicorn.conf.py",
+        "pago_pedido.py",
+        "gestionar_pedido.py",
+    ):
         assert nombre_archivo in contenido, (
             f"{nombre_archivo} no aparece en el Dockerfile: agrégalo a la línea COPY para que no "
             "falte dentro de la imagen (mismo tipo de error que con perfil_camilo.md el 21/10/2026)."

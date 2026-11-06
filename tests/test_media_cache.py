@@ -3,7 +3,7 @@ import logging
 
 import requests
 
-from media_cache import SEGUNDOS_VENCIMIENTO_MEDIA_ID, obtener_media_id
+from media_cache import SEGUNDOS_VENCIMIENTO_MEDIA_ID, obtener_media_id, reenviar_media_entrante
 
 AHORA = 1_800_000_000
 
@@ -133,3 +133,89 @@ def test_subida_fallida_se_registra_sin_lanzar_y_sin_exponer_el_token(monkeypatc
     mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
     assert "131009" in mensajes
     assert "token_secreto_de_prueba_no_debe_aparecer" not in mensajes
+
+
+class _RespuestaGetFalsa:
+    def __init__(self, cuerpo_json=None, contenido=b""):
+        self._cuerpo_json = cuerpo_json or {}
+        self.content = contenido
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._cuerpo_json
+
+
+def test_reenviar_media_entrante_descarga_y_resube_sin_escribir_a_disco(monkeypatch, tmp_path):
+    _preparar_entorno(monkeypatch, tmp_path)
+    llamadas_get = []
+    llamadas_escritura = []
+
+    def get_falso(url, headers, timeout):
+        llamadas_get.append(url)
+        if "graph.facebook.com" in url:
+            return _RespuestaGetFalsa({"url": "https://cdn.example/comprobante.jpg", "mime_type": "image/jpeg"})
+        return _RespuestaGetFalsa(contenido=b"bytes-del-comprobante")
+
+    def post_falso(url, headers, data, files, timeout):
+        # El archivo subido debe ser los bytes descargados, nunca una ruta en disco.
+        assert files["file"][1] == b"bytes-del-comprobante" or hasattr(files["file"][1], "read")
+
+        class RespuestaOk:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"id": "media-reenviado-1"}
+
+        return RespuestaOk()
+
+    import pathlib
+
+    monkeypatch.setattr(pathlib.Path, "write_bytes", lambda *a, **k: llamadas_escritura.append(1))
+    monkeypatch.setattr("media_cache.requests.get", get_falso)
+    monkeypatch.setattr("media_cache.requests.post", post_falso)
+
+    media_id = reenviar_media_entrante("comprobante-entrante-1")
+
+    assert media_id == "media-reenviado-1"
+    assert len(llamadas_get) == 2
+    assert llamadas_escritura == []  # nunca se escribió nada a disco
+
+
+def test_reenviar_media_entrante_fallo_al_descargar_devuelve_none_sin_lanzar(monkeypatch, tmp_path, caplog):
+    _preparar_entorno(monkeypatch, tmp_path)
+    caplog.set_level(logging.ERROR, logger="media_cache")
+
+    def get_falso(*args, **kwargs):
+        raise requests.exceptions.RequestException("fallo de red")
+
+    monkeypatch.setattr("media_cache.requests.get", get_falso)
+
+    media_id = reenviar_media_entrante("comprobante-entrante-1")
+
+    assert media_id is None
+    mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
+    assert "comprobante-entrante-1" not in mensajes
+
+
+def test_reenviar_media_entrante_fallo_al_resubir_devuelve_none_sin_lanzar(monkeypatch, tmp_path):
+    _preparar_entorno(monkeypatch, tmp_path)
+
+    def get_falso(url, headers, timeout):
+        if "graph.facebook.com" in url:
+            return _RespuestaGetFalsa({"url": "https://cdn.example/comprobante.jpg", "mime_type": "image/jpeg"})
+        return _RespuestaGetFalsa(contenido=b"bytes-del-comprobante")
+
+    def post_falso(*args, **kwargs):
+        raise requests.exceptions.RequestException("fallo de red al subir")
+
+    monkeypatch.setattr("media_cache.requests.get", get_falso)
+    monkeypatch.setattr("media_cache.requests.post", post_falso)
+
+    media_id = reenviar_media_entrante("comprobante-entrante-1")
+
+    assert media_id is None

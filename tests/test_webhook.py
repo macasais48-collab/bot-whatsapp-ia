@@ -272,6 +272,8 @@ def fabrica_cliente(
         obtener_media_id_fn=None,
         pedidos=None,
         cerebro=None,
+        numero_dueno=None,
+        reenviar_media_fn=None,
     ):
         contador["n"] += 1
         historial_dedup = HistorialSQLite(tmp_path / f"prueba_{contador['n']}.db")
@@ -289,8 +291,10 @@ def fabrica_cliente(
             enviar_botones_fn=envios_botones,
             enviar_lista_fn=envios_lista,
             obtener_media_id_fn=obtener_media_id_fn or obtencion_media_id,
+            reenviar_media_fn=reenviar_media_fn or (lambda media_id_entrante: "media-reenviado-de-prueba"),
             recursos=recursos,
             pedidos=pedidos or Pedidos(tmp_path / f"pedidos_{contador['n']}.db"),
+            numero_dueno=numero_dueno,
             reloj=reloj or (lambda: RELOJ_PRUEBA_SEGUNDOS),
         )
         app.testing = True
@@ -941,7 +945,8 @@ def test_elegir_producto_de_la_lista_inicia_el_pedido_y_confirmar_lo_deja_recibi
     _post_con_firma(cliente, _payload_mensaje_boton("wamid.3", numero, "continuar"))
     _post_con_firma(cliente, _payload_mensaje_boton("wamid.4", numero, "acepto_datos"))
     _post_con_firma(cliente, _payload_mensaje_boton("wamid.5", numero, "recoger_local"))
-    respuesta = _post_con_firma(cliente, _payload_mensaje_boton("wamid.6", numero, "confirmar"))
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.6", numero, "confirmar"))
+    respuesta = _post_con_firma(cliente, _payload_mensaje_boton("wamid.7", numero, "pago_efectivo"))
 
     assert respuesta.status_code == 200
     assert "Pedido #" in envios.llamadas[-1][1]
@@ -1077,3 +1082,145 @@ def test_texto_no_reconocido_en_pedido_tampoco_llama_a_cerebro_responder(tmp_pat
     # Se reenvía el mismo paso ("entrega"), con sus mismos dos botones.
     assert envios_botones_fake.llamadas[-1][1] == "¿Cómo desea recibir su pedido?"
     assert {b["id"] for b in envios_botones_fake.llamadas[-1][2]} == {"domicilio", "recoger_local"}
+
+
+# -- Sub-fase 4: pago asistido --
+
+NUMERO_DUENO_DE_PRUEBA = "573005554433"
+
+
+def _pedido_en_verificacion(pedidos, numero="573001112233"):
+    id_pedido = pedidos.crear_en_construccion(numero, "tamales", ahora=RELOJ_PRUEBA_SEGUNDOS)
+    pedidos.marcar_pago_pendiente(id_pedido, total=16000, ahora=RELOJ_PRUEBA_SEGUNDOS)
+    pedidos.marcar_pago_por_verificar(id_pedido, ahora=RELOJ_PRUEBA_SEGUNDOS)
+    return id_pedido
+
+
+def test_boton_del_dueno_confirma_el_pago_y_notifica_al_cliente(fabrica_cliente, envios, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    id_pedido = _pedido_en_verificacion(pedidos, numero_cliente)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    respuesta = _post_con_firma(
+        cliente, _payload_mensaje_boton("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"pago_recibido_{id_pedido}")
+    )
+
+    assert respuesta.status_code == 200
+    assert pedidos.obtener(id_pedido)["estado"] == "pagado"
+    llamada_cliente = next(l for l in envios.llamadas if l[0] == numero_cliente)
+    assert "confirmado" in llamada_cliente[1].lower()
+    llamada_dueno = next(l for l in envios.llamadas if l[0] == NUMERO_DUENO_DE_PRUEBA)
+    assert f"#{id_pedido}" in llamada_dueno[1]
+
+
+def test_boton_no_ha_llegado_del_dueno_vuelve_el_pedido_a_pago_pendiente(fabrica_cliente, envios, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    id_pedido = _pedido_en_verificacion(pedidos, numero_cliente)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"pago_no_llego_{id_pedido}"))
+
+    assert pedidos.obtener(id_pedido)["estado"] == "pago_pendiente"
+    llamada_cliente = next(l for l in envios.llamadas if l[0] == numero_cliente)
+    assert "no vemos su pago" in llamada_cliente[1].lower()
+
+
+def test_boton_identico_desde_otro_numero_no_confirma_nada(fabrica_cliente, envios, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    id_pedido = _pedido_en_verificacion(pedidos, numero_cliente)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+    otro_numero = "573009998877"
+
+    respuesta = _post_con_firma(
+        cliente, _payload_mensaje_boton("wamid.1", otro_numero, f"pago_recibido_{id_pedido}")
+    )
+
+    assert respuesta.status_code == 200
+    assert pedidos.obtener(id_pedido)["estado"] == "pago_por_verificar"
+    assert not any(l[0] == numero_cliente for l in envios.llamadas)
+
+
+def test_mensaje_de_texto_del_dueno_recibe_el_recordatorio_fijo_y_nunca_llega_a_la_ia(tmp_path, monkeypatch):
+    monkeypatch.setenv("META_APP_SECRET", APP_SECRET)
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", VERIFY_TOKEN)
+    envios_texto = EnviosFalsos()
+    cerebro_que_falla = CerebroQueFalla()
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+
+    app = crear_app(
+        cerebro=cerebro_que_falla,
+        historial_dedup=HistorialSQLite(tmp_path / "historial.db"),
+        enviar_texto_fn=envios_texto,
+        recursos={},
+        pedidos=pedidos,
+        numero_dueno=NUMERO_DUENO_DE_PRUEBA,
+        reloj=lambda: RELOJ_PRUEBA_SEGUNDOS,
+    )
+    cliente = app.test_client()
+
+    respuesta = _post_con_firma(
+        cliente, _payload_mensaje_texto("wamid.1", NUMERO_DUENO_DE_PRUEBA, "hola")
+    )
+
+    assert respuesta.status_code == 200
+    assert cerebro_que_falla.llamadas == 0
+    assert envios_texto.llamadas == [
+        (NUMERO_DUENO_DE_PRUEBA, "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar.")
+    ]
+    assert pedidos.obtener_activo(NUMERO_DUENO_DE_PRUEBA) is None
+
+
+def test_boton_desconocido_del_dueno_recibe_el_recordatorio_fijo(fabrica_cliente, envios, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.1", NUMERO_DUENO_DE_PRUEBA, "algun_otro_boton"))
+
+    assert envios.llamadas == [
+        (NUMERO_DUENO_DE_PRUEBA, "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar.")
+    ]
+
+
+def test_un_pedido_en_pago_pendiente_bloquea_iniciar_un_pedido_nuevo(
+    fabrica_cliente, envios, envios_botones, tmp_path
+):
+    ruta_recursos = _escribir_recursos_webhook(tmp_path, RECURSOS_DE_PRUEBA_PEDIDO_WEBHOOK)
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero = "573001112233"
+    id_pedido = pedidos.crear_en_construccion(numero, "tamales", ahora=RELOJ_PRUEBA_SEGUNDOS)
+    pedidos.marcar_pago_pendiente(id_pedido, total=8000, ahora=RELOJ_PRUEBA_SEGUNDOS)
+    cliente = fabrica_cliente(ruta_recursos=ruta_recursos, pedidos=pedidos)
+
+    _post_con_firma(cliente, _payload_mensaje_lista("wamid.1", numero, "bebida"))
+
+    # No se crea un segundo pedido ni se le muestra el menú de nuevo: el mensaje
+    # lo atiende el flujo de pago en curso (pago_pendiente), no un pedido nuevo.
+    pedido_actual = pedidos.obtener_activo(numero)
+    assert pedido_actual["id"] == id_pedido
+    assert pedido_actual["estado"] == "pago_pendiente"
+
+
+def test_salud_no_se_registra_en_el_log(fabrica_cliente, caplog):
+    cliente = fabrica_cliente()
+    caplog.set_level(logging.INFO, logger="webhook")
+
+    cliente.get("/salud")
+
+    mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
+    assert "/salud" not in mensajes
+
+
+def test_una_peticion_normal_deja_una_sola_linea_de_log(fabrica_cliente, caplog):
+    cliente = fabrica_cliente()
+    caplog.set_level(logging.INFO, logger="webhook")
+
+    cliente.get(
+        "/webhook",
+        query_string={"hub.mode": "subscribe", "hub.verify_token": VERIFY_TOKEN, "hub.challenge": "123"},
+    )
+
+    lineas_de_peticion = [r for r in caplog.records if "/webhook" in r.getMessage()]
+    assert len(lineas_de_peticion) == 1

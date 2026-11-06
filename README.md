@@ -119,9 +119,25 @@ Cuando el cliente elige un producto del menú (o toca el botón "Hacer pedido"),
 
 El flujo cubre, en orden: elegir productos (con botones "Agregar otro"/"Continuar" para pedir varios) → tipo de entrega (domicilio o recoger en el local). Si es domicilio: valida el pedido mínimo, **solo entonces** pide el consentimiento de datos (Ley 1581) — recoger en el local nunca lo pide, porque no hace falta guardar ninguna dirección — y si el cliente no acepta, no cancela: ofrece `[Recoger en el local] [Cancelar]` en su lugar. Si acepta, sigue con la zona (de una lista) y la dirección (por texto o compartiendo la ubicación). El resumen y el mensaje final de confirmación muestran la zona y la dirección exactas (o "ubicación compartida por WhatsApp" si el cliente compartió su ubicación en vez de escribirla), con el total **siempre calculado desde `"catalogo"` y `"domicilio"`**. También maneja salidas en cualquier punto: palabras clave para cancelar o pedir una persona (sin distinguir mayúsculas ni tildes), 30 minutos sin respuesta cancelan el pedido en construcción, y ante una entrada que no se reconoce reenvía el mismo paso (los mismos botones, la misma lista o el mismo resumen) en vez de un mensaje genérico, para que el cliente no pierda lo ya elegido.
 
-Los pedidos se guardan en la misma base SQLite (`pedidos.py`, tablas `pedidos` y `pedido_items`), con un número de pedido autoincremental y un solo pedido en construcción por número de cliente. El pago y su confirmación son una fase posterior (sub-fase 4): por ahora el pedido queda en estado `"recibido"`.
+Los pedidos se guardan en la misma base SQLite (`pedidos.py`, tablas `pedidos` y `pedido_items`), con un número de pedido autoincremental y un solo pedido activo por número de cliente (en construcción, con el pago pendiente, o con el pago en verificación).
 
-**Logging bajo gunicorn:** `gunicorn.conf.py` (cargado con `--config` desde el `CMD` del Dockerfile) configura el logging en cada worker (`post_fork`) y el log de accesos de gunicorn, para que los eventos de `webhook.py` y `flujo_pedido.py` (p. ej. "Pedido #7 confirmado", "mensaje antiguo ignorado") se vean con `docker compose logs`. El log de accesos nunca incluye la cadena de consulta (el verify token de Meta viaja ahí) y los eventos de la aplicación nunca incluyen el número de teléfono completo (solo los últimos 4 dígitos, vía `telefono.py`), el texto de los mensajes, direcciones ni ubicaciones — solo el hecho de que algo pasó.
+### Pago asistido
+
+Al tocar "Confirmar", el bot pregunta cómo desea pagar: **efectivo** (el pedido queda confirmado de inmediato, con pago contra entrega o al recoger) o **QR / transferencia** (envía la imagen del QR de ejemplo con el valor exacto y el número de pedido como referencia, y pide el comprobante). El valor a pagar siempre sale del total ya calculado por código — nunca de la IA ni de un texto del cliente.
+
+Cuando el cliente envía la foto del comprobante, el pedido pasa a verificación y, si está configurada la variable `NUMERO_DUENO`, el bot le reenvía al dueño el comprobante (descargado y vuelto a subir en memoria, sin escribir nada a disco ni a la base de datos — la documentación oficial de Meta no ofrece una forma de reenviar un media id entrante directamente) junto con botones `[Pago recibido] [No ha llegado]`. Solo un mensaje que llegue exactamente de ese número puede confirmar o rechazar un pago; cualquier otro mensaje del dueño (un "hola", un botón que ya no aplica) recibe un recordatorio fijo de que ese es el número del negocio, sin pasar nunca por la IA ni por el flujo de pedidos. Si ese aviso falla (por ejemplo, por la ventana de 24 horas de WhatsApp sin un mensaje previo del dueño), se registra una advertencia y el pedido queda igual en verificación — al cliente nunca le llega ese error.
+
+Como respaldo (o si `NUMERO_DUENO` no está configurada), `gestionar_pedido.py` permite listar los pedidos en espera y confirmar o rechazar un pago desde la línea de comandos dentro del contenedor:
+
+```bash
+docker compose exec bot-whatsapp python gestionar_pedido.py listar
+docker compose exec bot-whatsapp python gestionar_pedido.py confirmar <numero_de_pedido>
+docker compose exec bot-whatsapp python gestionar_pedido.py no-llego <numero_de_pedido>
+```
+
+El script enmascara siempre el teléfono del cliente y pide una confirmación explícita antes de aplicar el cambio. Las palabras clave para cancelar o pedir una persona siguen funcionando durante el pago, salvo que ya se envió un comprobante: ahí "cancelar" ya no cancela (hay dinero en camino) y, junto con "asesor", solo deriva a una persona sin tocar el estado del pedido. El timeout de 30 minutos tampoco aplica mientras se espera un pago.
+
+**Logging bajo gunicorn:** `gunicorn.conf.py` (cargado con `--config` desde el `CMD` del Dockerfile) configura el logging en cada worker (`post_fork`), para que los eventos de `webhook.py`, `flujo_pedido.py` y `pago_pedido.py` (p. ej. "Pedido #7 confirmado", "mensaje antiguo ignorado") se vean con `docker compose logs`. El log de accesos propio de gunicorn está desactivado para no duplicar la línea que ya registra `webhook.py` por cada petición (método, ruta sin cadena de consulta, código de estado) — esa línea nunca incluye el verify token de Meta, y las peticiones a `/salud` del healthcheck no se registran. Los eventos de la aplicación nunca incluyen el número de teléfono completo (solo los últimos 4 dígitos, vía `telefono.py`), el texto de los mensajes, direcciones, ubicaciones ni el contenido de un comprobante de pago — solo el hecho de que algo pasó.
 
 ### Créditos de fotos
 
@@ -165,9 +181,11 @@ BotWhatsApp/
 ├── mensajes_enriquecidos.py       # Envío de ubicación, botón con enlace (cta_url), imágenes, botones y listas
 ├── media_cache.py                 # Sube imágenes a Meta y cachea su media id (vence a los 25 días)
 ├── pedidos.py                     # Persistencia de pedidos en SQLite (tablas pedidos y pedido_items)
-├── flujo_pedido.py                # Máquina de estados de la toma de pedidos (sin IA, sin Flask)
-├── telefono.py                    # Enmascarado de número de teléfono (compartido por webhook y flujo_pedido)
-├── gunicorn.conf.py                # Logging de gunicorn (stdout, sin query string en el log de accesos)
+├── flujo_pedido.py                # Máquina de estados de la toma de pedidos y el pago (sin IA, sin Flask)
+├── pago_pedido.py                 # Confirmar/rechazar un pago en verificación (compartido webhook/script)
+├── gestionar_pedido.py             # CLI de respaldo: listar y confirmar pagos dentro del contenedor
+├── telefono.py                    # Enmascarado/normalización de número de teléfono
+├── gunicorn.conf.py                # Logging de gunicorn (stdout; accesslog propio desactivado)
 ├── verificar_config.py            # Verifica que .env tenga las variables, sin exponer valores
 ├── verificar_suscripcion_waba.py  # Diagnóstico: apps suscritas a la cuenta de WhatsApp
 ├── suscribir_app_a_waba.py        # Suscribe esta app a la cuenta de WhatsApp
@@ -219,7 +237,7 @@ Configuración del lado de Meta (resumen, sin IDs ni valores reales):
 pytest
 ```
 
-El proyecto tiene **185 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial, la deduplicación y los pedidos.
+El proyecto tiene **240 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial, la deduplicación y los pedidos.
 
 ## Despliegue con Docker
 

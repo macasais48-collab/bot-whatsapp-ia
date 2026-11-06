@@ -2,7 +2,8 @@ import logging
 import time
 import unicodedata
 
-from pedidos import Pedidos
+from pago_pedido import PREFIJO_BOTON_PAGO_NO_LLEGO, PREFIJO_BOTON_PAGO_RECIBIDO
+from pedidos import ESTADO_EN_CONSTRUCCION, ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_POR_VERIFICAR, Pedidos
 from telefono import enmascarar_numero
 
 logger = logging.getLogger(__name__)
@@ -22,9 +23,13 @@ ID_BOTON_CONFIRMAR = "confirmar"
 ID_BOTON_CAMBIAR = "cambiar"
 ID_BOTON_CANCELAR = "cancelar"
 ID_BOTON_SEGUIR = "seguir_pedido"
+ID_BOTON_PAGO_QR = "pago_qr"
+ID_BOTON_PAGO_EFECTIVO = "pago_efectivo"
 
 PALABRAS_CLAVE_CANCELAR = {"cancelar", "cancela", "salir"}
 PALABRAS_CLAVE_PERSONA = {"persona", "asesor", "humano", "humana", "hablar con alguien"}
+
+ESTADOS_PAGO = {ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_POR_VERIFICAR}
 
 MENSAJE_CANCELADO_POR_CLIENTE = "Su pedido en construcción fue cancelado. Escríbame cuando quiera empezar de nuevo."
 MENSAJE_CANCELADO_POR_INACTIVIDAD = (
@@ -34,6 +39,19 @@ MENSAJE_CANCELADO_POR_INACTIVIDAD = (
 MENSAJE_ENTRADA_NO_RECONOCIDA = (
     "No entendí esa respuesta. Para seguir con su pedido, elija una de las opciones. "
     "Si desea cancelar, escriba *cancelar*."
+)
+MENSAJE_CANCELAR_NO_DISPONIBLE_EN_VERIFICACION = (
+    "Como ya recibimos su comprobante, no podemos cancelar el pedido automáticamente. "
+)
+MENSAJE_COMPROBANTE_RECIBIDO = (
+    "Recibimos su comprobante. Estamos verificando el pago y le confirmamos en breve."
+)
+MENSAJE_PAGO_EN_VERIFICACION = (
+    "Ya estamos verificando su pago, le confirmamos en breve. No es necesario enviar nada más."
+)
+MENSAJE_DOCUMENTO_EN_PAGO_PENDIENTE = (
+    "Recibí un archivo, pero necesito una foto o captura de pantalla del comprobante, no un "
+    "documento. ¿Puede enviarla como imagen?"
 )
 TEXTO_CONSENTIMIENTO = (
     "Para tomar su pedido necesito guardar la dirección de entrega. Estos datos se usan solo "
@@ -123,6 +141,11 @@ class FlujoPedido:
         enviar_botones_fn,
         enviar_lista_fn,
         reloj=time.time,
+        numero_dueno: str | None = None,
+        enviar_imagen_fn=None,
+        obtener_media_id_fn=None,
+        reenviar_media_fn=None,
+        imagen_qr: dict | None = None,
     ) -> None:
         self._pedidos = pedidos
         self._catalogo = catalogo
@@ -132,6 +155,11 @@ class FlujoPedido:
         self._enviar_botones_fn = enviar_botones_fn
         self._enviar_lista_fn = enviar_lista_fn
         self._reloj = reloj
+        self._numero_dueno = numero_dueno
+        self._enviar_imagen_fn = enviar_imagen_fn
+        self._obtener_media_id_fn = obtener_media_id_fn
+        self._reenviar_media_fn = reenviar_media_fn
+        self._imagen_qr = imagen_qr
         self._manejadores = {
             "producto": self._manejar_producto,
             "cantidad": self._manejar_cantidad,
@@ -143,18 +171,23 @@ class FlujoPedido:
             "zona": self._manejar_zona,
             "direccion": self._manejar_direccion,
             "confirmacion": self._manejar_confirmacion,
+            "metodo_pago": self._manejar_metodo_pago,
+            "pago_pendiente": self._manejar_pago_pendiente,
+            "pago_por_verificar": self._manejar_pago_por_verificar,
         }
 
     # -- Envío de mensajes (adaptadores delgados sobre las funciones inyectadas) --
 
-    def _enviar_texto(self, numero: str, texto: str) -> None:
-        self._enviar_texto_fn(numero, texto)
+    def _enviar_texto(self, numero: str, texto: str) -> bool:
+        return self._enviar_texto_fn(numero, texto)
 
-    def _enviar_botones(self, numero: str, texto_cuerpo: str, botones: list[tuple[str, str]]) -> None:
-        self._enviar_botones_fn(numero, texto_cuerpo, [{"id": id_, "titulo": titulo} for id_, titulo in botones])
+    def _enviar_botones(self, numero: str, texto_cuerpo: str, botones: list[tuple[str, str]]) -> bool:
+        return self._enviar_botones_fn(
+            numero, texto_cuerpo, [{"id": id_, "titulo": titulo} for id_, titulo in botones]
+        )
 
-    def _enviar_lista(self, numero: str, texto_cuerpo: str, texto_boton: str, secciones: list[dict]) -> None:
-        self._enviar_lista_fn(numero, texto_cuerpo, texto_boton, secciones)
+    def _enviar_lista(self, numero: str, texto_cuerpo: str, texto_boton: str, secciones: list[dict]) -> bool:
+        return self._enviar_lista_fn(numero, texto_cuerpo, texto_boton, secciones)
 
     def _enviar_menu(self, numero: str, texto_cuerpo: str) -> None:
         filas = [
@@ -221,6 +254,96 @@ class FlujoPedido:
             [(ID_BOTON_RECOGER_LOCAL, "Recoger en el local"), (ID_BOTON_CANCELAR, "Cancelar")],
         )
 
+    def _pedir_metodo_pago(self, numero: str) -> None:
+        self._enviar_botones(
+            numero,
+            "¿Cómo desea pagar?",
+            [(ID_BOTON_PAGO_QR, "QR / transferencia"), (ID_BOTON_PAGO_EFECTIVO, "Efectivo")],
+        )
+
+    def _pedir_comprobante(self, numero: str, pedido_id: int, total: int) -> None:
+        texto_valor = f"Valor a pagar: {_formatear_pesos(total)} · Referencia: Pedido #{pedido_id}"
+        media_id = None
+        if self._imagen_qr is not None and self._obtener_media_id_fn is not None:
+            media_id = self._obtener_media_id_fn(self._imagen_qr["clave"], self._imagen_qr["archivo"])
+        if media_id is not None and self._enviar_imagen_fn is not None:
+            self._enviar_imagen_fn(numero, media_id, caption=texto_valor)
+        else:
+            if self._imagen_qr is not None:
+                logger.warning(
+                    "No se pudo obtener el media id del QR de ejemplo; se envía solo el texto de pago."
+                )
+            self._enviar_texto(numero, texto_valor)
+        self._enviar_botones(
+            numero,
+            "Cuando pague, envíe aquí la foto del comprobante. Si prefiere, también puede pagar en efectivo.",
+            [(ID_BOTON_PAGO_EFECTIVO, "Pagar en efectivo")],
+        )
+
+    def _confirmar_pago_efectivo(self, numero: str, pedido: dict, ahora: float) -> None:
+        texto_resumen, total = _construir_resumen(pedido, self._domicilio)
+        self._pedidos.confirmar_efectivo(pedido["id"], total, ahora)
+        logger.info(
+            "Pedido #%s confirmado con pago en efectivo (remitente=%s)",
+            pedido["id"], enmascarar_numero(numero),
+        )
+        if pedido["tipo_entrega"] == "domicilio":
+            linea_tiempo = f'Tiempo estimado: {self._domicilio[pedido["zona_domicilio"]]["tiempo_estimado"]}.'
+            linea_pago = "Pago: en efectivo al recibir su pedido."
+        else:
+            linea_tiempo = "Puede recoger su pedido en el local."
+            linea_pago = "Pago: en efectivo al recoger su pedido."
+        self._enviar_texto(
+            numero, f'Pedido #{pedido["id"]} recibido.\n\n{texto_resumen}\n{linea_tiempo}\n{linea_pago}'
+        )
+
+    def _avisar_dueno(self, pedido: dict, mensaje: dict) -> None:
+        if not self._numero_dueno:
+            return
+
+        texto_resumen, _ = _construir_resumen(pedido, self._domicilio)
+        texto_aviso = (
+            f'Pedido #{pedido["id"]} · Cliente {enmascarar_numero(pedido["numero_cliente"])}\n'
+            f"{texto_resumen}\n\n"
+            f"Antes de confirmar, verifique en su app de Bold o Nequi que llegaron "
+            f'{_formatear_pesos(pedido["total"])} con referencia Pedido #{pedido["id"]}.'
+        )
+
+        media_id_entrante = mensaje.get("image", {}).get("id")
+        media_id_reenviado = None
+        if media_id_entrante and self._reenviar_media_fn is not None:
+            media_id_reenviado = self._reenviar_media_fn(media_id_entrante)
+
+        if media_id_reenviado is not None and self._enviar_imagen_fn is not None:
+            envio_ok = self._enviar_imagen_fn(self._numero_dueno, media_id_reenviado, caption=texto_aviso)
+        else:
+            envio_ok = self._enviar_texto(self._numero_dueno, texto_aviso)
+
+        botones_ok = self._enviar_botones(
+            self._numero_dueno,
+            "¿Qué desea hacer?",
+            [
+                (f"{PREFIJO_BOTON_PAGO_RECIBIDO}{pedido['id']}", "Pago recibido"),
+                (f"{PREFIJO_BOTON_PAGO_NO_LLEGO}{pedido['id']}", "No ha llegado"),
+            ],
+        )
+
+        if not (envio_ok and botones_ok):
+            logger.warning(
+                "No se pudo completar el aviso al dueño del pedido #%s (posible ventana de 24 "
+                "horas de WhatsApp sin mensaje previo del dueño, o fallo de red). El pedido queda "
+                "en pago_por_verificar; se puede confirmar con gestionar_pedido.py.",
+                pedido["id"],
+            )
+
+    def _derivar_sin_cancelar(self, numero: str, pedido: dict, ahora: float, texto: str) -> None:
+        self._pedidos.tocar(pedido["id"], ahora)
+        logger.info(
+            "Pedido #%s derivado a una persona sin cancelar (estado=%s, remitente=%s)",
+            pedido["id"], pedido["estado"], enmascarar_numero(numero),
+        )
+        self._enviar_texto(numero, texto)
+
     def _reenviar_paso_actual(self, numero: str, pedido: dict) -> None:
         # Reenvía el MISMO interactivo del paso en el que está el pedido (los
         # mismos botones, la misma lista o el mismo resumen), para que el
@@ -243,8 +366,14 @@ class FlujoPedido:
             self._enviar_lista_zonas(numero)
         elif paso == "confirmacion":
             self._enviar_resumen_y_confirmacion(numero, pedido)
+        elif paso == "metodo_pago":
+            self._pedir_metodo_pago(numero)
+        elif paso == "pago_pendiente":
+            self._pedir_comprobante(numero, pedido["id"], pedido["total"])
         # paso == "direccion" no reenvía nada aquí: espera texto libre o una
-        # ubicación compartida, no un interactivo con botones fijos.
+        # ubicación compartida, no un interactivo con botones fijos. paso ==
+        # "pago_por_verificar" tampoco: su manejador nunca devuelve False (ver
+        # _manejar_pago_por_verificar), así que nunca llega hasta aquí.
 
     # -- Entradas públicas --
 
@@ -253,13 +382,13 @@ class FlujoPedido:
         self.manejar_mensaje(numero, mensaje)
 
     def manejar_mensaje(self, numero: str, mensaje: dict) -> None:
-        pedido = self._pedidos.obtener_en_construccion(numero)
+        pedido = self._pedidos.obtener_activo(numero)
         if pedido is None:
             return
 
         ahora = self._reloj()
 
-        if ahora - pedido["actualizado_en"] > SEGUNDOS_TIMEOUT_PEDIDO:
+        if pedido["estado"] == ESTADO_EN_CONSTRUCCION and ahora - pedido["actualizado_en"] > SEGUNDOS_TIMEOUT_PEDIDO:
             self._pedidos.cancelar(pedido["id"], ahora)
             logger.info(
                 "Pedido #%s cancelado por inactividad de 30 minutos (remitente=%s)",
@@ -273,24 +402,43 @@ class FlujoPedido:
         texto_normalizado = _normalizar(texto) if texto is not None else None
 
         if texto_normalizado is not None and texto_normalizado in PALABRAS_CLAVE_CANCELAR:
-            self._pedidos.cancelar(pedido["id"], ahora)
-            logger.info("Pedido #%s cancelado por el cliente (remitente=%s)", pedido["id"], enmascarar_numero(numero))
-            self._enviar_texto(numero, MENSAJE_CANCELADO_POR_CLIENTE)
+            if pedido["estado"] == ESTADO_PAGO_POR_VERIFICAR:
+                self._derivar_sin_cancelar(
+                    numero, pedido, ahora,
+                    MENSAJE_CANCELAR_NO_DISPONIBLE_EN_VERIFICACION + self._mensaje_derivacion,
+                )
+            else:
+                self._pedidos.cancelar(pedido["id"], ahora)
+                logger.info(
+                    "Pedido #%s cancelado por el cliente (remitente=%s)", pedido["id"], enmascarar_numero(numero)
+                )
+                self._enviar_texto(numero, MENSAJE_CANCELADO_POR_CLIENTE)
             return
 
         if texto_normalizado is not None and texto_normalizado in PALABRAS_CLAVE_PERSONA:
-            self._pedidos.cancelar(pedido["id"], ahora)
-            logger.info(
-                "Pedido #%s cancelado y derivado a una persona (remitente=%s)",
-                pedido["id"], enmascarar_numero(numero),
-            )
-            self._enviar_texto(numero, self._mensaje_derivacion)
+            if pedido["estado"] in ESTADOS_PAGO:
+                self._derivar_sin_cancelar(numero, pedido, ahora, self._mensaje_derivacion)
+            else:
+                self._pedidos.cancelar(pedido["id"], ahora)
+                logger.info(
+                    "Pedido #%s cancelado y derivado a una persona (remitente=%s)",
+                    pedido["id"], enmascarar_numero(numero),
+                )
+                self._enviar_texto(numero, self._mensaje_derivacion)
             return
 
         if id_interactivo == ID_BOTON_CANCELAR:
-            self._pedidos.cancelar(pedido["id"], ahora)
-            logger.info("Pedido #%s cancelado por el cliente (remitente=%s)", pedido["id"], enmascarar_numero(numero))
-            self._enviar_texto(numero, MENSAJE_CANCELADO_POR_CLIENTE)
+            if pedido["estado"] == ESTADO_PAGO_POR_VERIFICAR:
+                self._derivar_sin_cancelar(
+                    numero, pedido, ahora,
+                    MENSAJE_CANCELAR_NO_DISPONIBLE_EN_VERIFICACION + self._mensaje_derivacion,
+                )
+            else:
+                self._pedidos.cancelar(pedido["id"], ahora)
+                logger.info(
+                    "Pedido #%s cancelado por el cliente (remitente=%s)", pedido["id"], enmascarar_numero(numero)
+                )
+                self._enviar_texto(numero, MENSAJE_CANCELADO_POR_CLIENTE)
             return
 
         if id_interactivo == ID_BOTON_SEGUIR:
@@ -492,14 +640,8 @@ class FlujoPedido:
             return False
 
         if id_interactivo == ID_BOTON_CONFIRMAR:
-            texto_resumen, total = _construir_resumen(pedido, self._domicilio)
-            self._pedidos.confirmar(pedido["id"], total, ahora)
-            logger.info("Pedido #%s confirmado (remitente=%s)", pedido["id"], enmascarar_numero(numero))
-            if pedido["tipo_entrega"] == "domicilio":
-                linea_tiempo = f'Tiempo estimado: {self._domicilio[pedido["zona_domicilio"]]["tiempo_estimado"]}.'
-            else:
-                linea_tiempo = "Puede recoger su pedido en el local."
-            self._enviar_texto(numero, f'Pedido #{pedido["id"]} recibido.\n\n{texto_resumen}\n{linea_tiempo}')
+            self._pedidos.fijar_paso(pedido["id"], "metodo_pago", ahora)
+            self._pedir_metodo_pago(numero)
             return True
 
         if id_interactivo == ID_BOTON_CAMBIAR:
@@ -507,3 +649,56 @@ class FlujoPedido:
             self._enviar_menu(numero, "Elija de nuevo los productos de su pedido:")
             return True
         return False
+
+    def _manejar_metodo_pago(self, numero, pedido, mensaje, ahora) -> bool:
+        tipo_interactivo, id_interactivo = _tipo_e_id_interactivo(mensaje)
+        if tipo_interactivo != "button_reply":
+            return False
+
+        if id_interactivo == ID_BOTON_PAGO_EFECTIVO:
+            self._confirmar_pago_efectivo(numero, pedido, ahora)
+            return True
+
+        if id_interactivo == ID_BOTON_PAGO_QR:
+            _, total = _construir_resumen(pedido, self._domicilio)
+            self._pedidos.marcar_pago_pendiente(pedido["id"], total, ahora)
+            logger.info(
+                "Pedido #%s: método de pago QR, queda en pago_pendiente (remitente=%s)",
+                pedido["id"], enmascarar_numero(numero),
+            )
+            self._pedir_comprobante(numero, pedido["id"], total)
+            return True
+        return False
+
+    def _manejar_pago_pendiente(self, numero, pedido, mensaje, ahora) -> bool:
+        tipo_interactivo, id_interactivo = _tipo_e_id_interactivo(mensaje)
+        if tipo_interactivo == "button_reply" and id_interactivo == ID_BOTON_PAGO_EFECTIVO:
+            self._confirmar_pago_efectivo(numero, pedido, ahora)
+            return True
+
+        tipo_mensaje = mensaje.get("type")
+        if tipo_mensaje == "image":
+            self._pedidos.marcar_pago_por_verificar(pedido["id"], ahora)
+            logger.info(
+                "Pedido #%s: comprobante recibido, pasa a verificación (remitente=%s)",
+                pedido["id"], enmascarar_numero(numero),
+            )
+            self._enviar_texto(numero, MENSAJE_COMPROBANTE_RECIBIDO)
+            self._avisar_dueno(pedido, mensaje)
+            return True
+
+        if tipo_mensaje == "document":
+            self._pedidos.tocar(pedido["id"], ahora)
+            self._enviar_texto(numero, MENSAJE_DOCUMENTO_EN_PAGO_PENDIENTE)
+            return True
+
+        if _texto_entrante(mensaje) is not None:
+            self._pedidos.tocar(pedido["id"], ahora)
+            self._pedir_comprobante(numero, pedido["id"], pedido["total"])
+            return True
+        return False
+
+    def _manejar_pago_por_verificar(self, numero, pedido, mensaje, ahora) -> bool:
+        self._pedidos.tocar(pedido["id"], ahora)
+        self._enviar_texto(numero, MENSAJE_PAGO_EN_VERIFICACION)
+        return True
