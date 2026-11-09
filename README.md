@@ -101,7 +101,17 @@ El webhook elige qué información de negocio usar según la variable `PERFIL_NE
 | `camilo` | `perfil_camilo.md` | Presenta el servicio de Camilo a dueños de negocio interesados en contratarlo. |
 | `tamales` | `perfil_tamales.md` | Demo para un negocio de tamales con domicilios (Tamales Tolimenses, ficticio). |
 
-Un valor distinto a estos dos hace que el bot **falle al arrancar** con un mensaje claro, en vez de usar un perfil por defecto en silencio. Cada perfil nuevo requiere su propio despliegue (su propio número de WhatsApp), ya que un número solo puede atender un perfil a la vez.
+Un valor que no esté en esta tabla y tampoco siga la convención de perfiles de cliente (ver abajo) hace que el bot **falle al arrancar** con un mensaje claro, en vez de usar un perfil por defecto en silencio. Cada perfil nuevo requiere su propio despliegue (su propio número de WhatsApp), ya que un número solo puede atender un perfil a la vez.
+
+#### Perfiles de cliente (demos privadas, nunca en git ni en la imagen)
+
+Además de los perfiles de este repositorio, el bot puede cargar un perfil de cliente real (un prospecto, una demo privada) sin que su información entre nunca al control de versiones ni a la imagen Docker — el repositorio es público. El mecanismo es genérico, por convención, y no requiere tocar código para cada cliente nuevo:
+
+- Si `PERFIL_NEGOCIO` no coincide con ninguno de los perfiles de la tabla, pero es una clave válida (solo minúsculas, números y guion bajo, hasta 40 caracteres), el bot busca `clientes/<clave>/perfil_<clave>.md` y `clientes/<clave>/recursos_<clave>.json`.
+- La carpeta `clientes/` está en `.gitignore` y en `.dockerignore`: nunca se sube a GitHub ni se copia en el `Dockerfile`. Llega al contenedor solo a través de un volumen de **solo lectura** (`./clientes:/app/clientes:ro` en `docker-compose.yml`).
+- Las imágenes de un perfil de cliente (por ejemplo, un QR de ejemplo reutilizado) deben vivir dentro de su propia carpeta `clientes/<clave>/`, nunca referenciadas con `../` hacia fuera.
+- Si la clave no sigue el patrón permitido, o si la carpeta/los archivos no existen, el bot falla al arrancar con un mensaje claro (nunca con un error críptico de archivo no encontrado).
+- Para alternar entre un perfil de cliente y uno de este repositorio, solo se cambia `PERFIL_NEGOCIO` en `.env` y se recrea el contenedor (`docker compose up -d`).
 
 ### Mensajes enriquecidos
 
@@ -193,7 +203,8 @@ BotWhatsApp/
 ├── suscribir_app_a_waba.py        # Suscribe esta app a la cuenta de WhatsApp
 ├── docs/capturas/                 # Capturas de pantalla de este README
 ├── tests/                         # Pruebas automáticas (pytest)
-└── tests/carga/                   # Prueba de carga aparte (no es parte de la suite de pytest)
+├── tests/carga/                   # Prueba de carga aparte (no es parte de la suite de pytest)
+└── clientes/<clave>/              # Perfiles de cliente privados (fuera de git y de la imagen; ver "Perfiles de cliente")
 ```
 
 ## Instalación y uso
@@ -240,7 +251,7 @@ Configuración del lado de Meta (resumen, sin IDs ni valores reales):
 pytest
 ```
 
-El proyecto tiene **254 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial, la deduplicación y los pedidos.
+El proyecto tiene **265 pruebas automáticas** (una se omite en Windows sin privilegios de administrador: una prueba de defensa contra enlaces simbólicos), todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial, la deduplicación y los pedidos.
 
 ## Rendimiento
 

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -47,6 +48,15 @@ RECURSOS_NEGOCIO = {
     "tamales": Path(__file__).parent / "recursos_tamales.json",
 }
 
+# Perfiles de clientes reales (prospectos, demos privadas): sus archivos NUNCA
+# viven en este repositorio ni en la imagen Docker — información de un
+# tercero que todavía no es cliente. En vez de una lista blanca con el nombre
+# de cada cliente (el repo es público), se resuelven por convención desde
+# clientes/<clave>/, montada como volumen de solo lectura en docker-compose.yml
+# (ver _ruta_perfil_cliente más abajo).
+RAIZ_CLIENTES = Path(__file__).parent / "clientes"
+PATRON_CLAVE_PERFIL_CLIENTE = re.compile(r"^[a-z0-9_]{1,40}$")
+
 MENSAJE_DERIVACION_POR_DEFECTO = "Le comunico con una persona de nuestro equipo, que le responderá pronto."
 MENSAJE_SOLO_TEXTO = (
     "Por ahora solo puedo atender mensajes de texto. "
@@ -70,21 +80,44 @@ BOTONES_TEXTO_CUERPO_POR_DEFECTO = "Elija una opción:"
 
 def _resolver_clave_perfil() -> str:
     clave = obtener_env("PERFIL_NEGOCIO") or PERFIL_NEGOCIO_POR_DEFECTO
-    if clave not in PERFILES_NEGOCIO:
+    if clave in PERFILES_NEGOCIO or PATRON_CLAVE_PERFIL_CLIENTE.match(clave):
+        return clave
+    raise ValueError(
+        "PERFIL_NEGOCIO no es válido. Debe ser uno de: "
+        + ", ".join(sorted(PERFILES_NEGOCIO))
+        + ", o la clave de un perfil de cliente (solo minúsculas, números y guion bajo, hasta "
+        "40 caracteres) con su carpeta clientes/<clave>/ correspondiente."
+    )
+
+
+def _ruta_perfil_cliente(clave: str, nombre_archivo: str) -> Path:
+    ruta = (RAIZ_CLIENTES / clave / nombre_archivo).resolve()
+    if not ruta.is_relative_to(RAIZ_CLIENTES.resolve()):
+        # Defensa en profundidad: con PATRON_CLAVE_PERFIL_CLIENTE esto no debería
+        # ser alcanzable (la clave nunca puede traer "/" ni ".."), pero cubre
+        # también el caso de un enlace simbólico dentro de clientes/ que apunte
+        # fuera de esa carpeta.
+        raise ValueError(f"Ruta de perfil de cliente fuera de {RAIZ_CLIENTES.name}/: '{clave}'.")
+    if not ruta.is_file():
         raise ValueError(
-            "PERFIL_NEGOCIO no es válido. Valores permitidos: "
-            + ", ".join(sorted(PERFILES_NEGOCIO))
-            + "."
+            f"El perfil '{clave}' requiere clientes/{clave}/{nombre_archivo} "
+            "(no incluido en este repositorio; pídeselo al desarrollador)."
         )
-    return clave
+    return ruta
 
 
 def _resolver_ruta_negocio() -> Path:
-    return PERFILES_NEGOCIO[_resolver_clave_perfil()]
+    clave = _resolver_clave_perfil()
+    if clave in PERFILES_NEGOCIO:
+        return PERFILES_NEGOCIO[clave]
+    return _ruta_perfil_cliente(clave, f"perfil_{clave}.md")
 
 
 def _resolver_ruta_recursos() -> Path:
-    return RECURSOS_NEGOCIO[_resolver_clave_perfil()]
+    clave = _resolver_clave_perfil()
+    if clave in RECURSOS_NEGOCIO:
+        return RECURSOS_NEGOCIO[clave]
+    return _ruta_perfil_cliente(clave, f"recursos_{clave}.json")
 
 
 def _extraer_mensaje_derivacion(ruta_negocio: Path) -> str:

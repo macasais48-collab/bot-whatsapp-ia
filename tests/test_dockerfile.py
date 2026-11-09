@@ -76,3 +76,28 @@ def test_dockerfile_copia_las_carpetas_de_imagenes_de_los_recursos():
             "que las imágenes no falten dentro de la imagen (mismo tipo de error que "
             "con perfil_camilo.md el 21/10/2026)."
         )
+
+
+def test_dockerfile_nunca_copia_la_carpeta_de_clientes():
+    # clientes/ guarda datos reales de terceros que todavía no son clientes
+    # (perfiles de prospectos, demos privadas): nunca deben entrar a la
+    # imagen Docker. Llegan al contenedor solo por el volumen de solo
+    # lectura de docker-compose.yml (ver webhook.RAIZ_CLIENTES).
+    ruta_dockerfile = Path(__file__).parent.parent / "Dockerfile"
+    contenido = ruta_dockerfile.read_text(encoding="utf-8")
+
+    assert "clientes" not in contenido.lower(), (
+        "El Dockerfile no debe mencionar 'clientes' en ningún lado: esa carpeta guarda "
+        "datos reales de terceros y nunca debe entrar a la imagen."
+    )
+
+
+def test_gitignore_y_dockerignore_protegen_la_carpeta_de_clientes():
+    raiz_proyecto = Path(__file__).parent.parent
+
+    for nombre_archivo in (".gitignore", ".dockerignore"):
+        contenido = (raiz_proyecto / nombre_archivo).read_text(encoding="utf-8")
+        assert "clientes/" in contenido, (
+            f"{nombre_archivo} debe listar 'clientes/' para que esa carpeta (datos reales de "
+            "terceros) nunca se suba a git ni entre a la imagen Docker."
+        )

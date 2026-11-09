@@ -12,6 +12,9 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - datos_bot:/app/datos
+      # Perfiles de clientes reales (nunca en la imagen ni en git): ver
+      # webhook.py (RAIZ_CLIENTES) y .gitignore/.dockerignore (clientes/).
+      - ./clientes:/app/clientes:ro
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
