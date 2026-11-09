@@ -7,6 +7,7 @@ from pathlib import Path
 import requests
 
 from env import obtener_env
+from red_meta import peticion_con_reintentos
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ def _subir_bytes(contenido: bytes, nombre_archivo: str, tipo_mime: str) -> str |
     url = f"https://graph.facebook.com/{version}/{phone_number_id}/media"
     encabezados = {"Authorization": f"Bearer {token}"}
 
-    try:
+    def _peticion():
         respuesta = requests.post(
             url,
             headers=encabezados,
@@ -64,6 +65,10 @@ def _subir_bytes(contenido: bytes, nombre_archivo: str, tipo_mime: str) -> str |
             timeout=TIEMPO_ESPERA_SEGUNDOS,
         )
         respuesta.raise_for_status()
+        return respuesta
+
+    try:
+        respuesta = peticion_con_reintentos(_peticion)
         return respuesta.json()["id"]
     except requests.exceptions.RequestException as error:
         codigo_estado = getattr(error.response, "status_code", None)
@@ -108,21 +113,31 @@ def reenviar_media_entrante(media_id_entrante: str) -> str | None:
         )
 
     encabezados = {"Authorization": f"Bearer {token}"}
-    try:
-        respuesta_media = requests.get(
+
+    def _pedir_metadata():
+        respuesta = requests.get(
             f"https://graph.facebook.com/{version}/{media_id_entrante}",
             headers=encabezados,
             timeout=TIEMPO_ESPERA_SEGUNDOS,
         )
-        respuesta_media.raise_for_status()
+        respuesta.raise_for_status()
+        return respuesta
+
+    def _descargar(url_descarga):
+        def _peticion():
+            respuesta = requests.get(url_descarga, headers=encabezados, timeout=TIEMPO_ESPERA_SEGUNDOS)
+            respuesta.raise_for_status()
+            return respuesta
+
+        return peticion_con_reintentos(_peticion)
+
+    try:
+        respuesta_media = peticion_con_reintentos(_pedir_metadata)
         datos_media = respuesta_media.json()
         url_descarga = datos_media["url"]
         tipo_mime = datos_media.get("mime_type", "application/octet-stream")
 
-        respuesta_descarga = requests.get(
-            url_descarga, headers=encabezados, timeout=TIEMPO_ESPERA_SEGUNDOS
-        )
-        respuesta_descarga.raise_for_status()
+        respuesta_descarga = _descargar(url_descarga)
         contenido = respuesta_descarga.content
     except (requests.exceptions.RequestException, KeyError, ValueError) as error:
         logger.error(

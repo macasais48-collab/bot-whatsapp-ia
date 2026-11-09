@@ -68,6 +68,60 @@ def test_usa_mensaje_seguro_si_falla_la_llamada_al_proveedor_de_ia():
     assert respuesta.derivar is True
 
 
+class _ErrorConCodigo(Exception):
+    def __init__(self, mensaje, status_code):
+        super().__init__(mensaje)
+        self.status_code = status_code
+
+
+def test_registra_el_limite_de_tasa_429_sin_datos_del_cliente(caplog):
+    fake = FakeProveedor(_ErrorConCodigo("limite excedido", 429))
+    cerebro = Cerebro(fake, HistorialMemoria())
+    caplog.set_level(logging.WARNING, logger="cerebro")
+
+    respuesta = cerebro.responder("conv1", "mi dirección es Calle 1 # 2-3, mi tarjeta es 4111111111111111")
+
+    assert respuesta.derivar is True
+    mensajes = "\n".join(r.getMessage() for r in caplog.records)
+    assert "limite_de_tasa_429" in mensajes
+    assert "Calle 1" not in mensajes
+    assert "4111111111111111" not in mensajes
+
+
+def test_registra_timeout_de_la_ia(caplog):
+    fake = FakeProveedor(TimeoutError("se agotó el tiempo"))
+    cerebro = Cerebro(fake, HistorialMemoria())
+    caplog.set_level(logging.WARNING, logger="cerebro")
+
+    cerebro.responder("conv1", "hola")
+
+    mensajes = "\n".join(r.getMessage() for r in caplog.records)
+    assert "timeout" in mensajes
+
+
+def test_registra_error_del_servidor_de_la_ia(caplog):
+    fake = FakeProveedor(_ErrorConCodigo("falla interna", 503))
+    cerebro = Cerebro(fake, HistorialMemoria())
+    caplog.set_level(logging.WARNING, logger="cerebro")
+
+    cerebro.responder("conv1", "hola")
+
+    mensajes = "\n".join(r.getMessage() for r in caplog.records)
+    assert "error_del_servidor" in mensajes
+
+
+def test_no_registra_nada_si_la_salida_es_json_invalido(caplog):
+    # Un JSON inválido no es un fallo de la LLAMADA a la IA (el proveedor sí
+    # respondió): no debe categorizarse como límite de tasa, timeout, etc.
+    fake = FakeProveedor("esto no es json")
+    cerebro = Cerebro(fake, HistorialMemoria())
+    caplog.set_level(logging.WARNING, logger="cerebro")
+
+    cerebro.responder("conv1", "hola")
+
+    assert caplog.records == []
+
+
 def test_el_prompt_de_sistema_incluye_la_informacion_del_negocio():
     fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
     cerebro = Cerebro(fake, HistorialMemoria())

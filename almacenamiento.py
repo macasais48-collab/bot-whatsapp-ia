@@ -1,7 +1,7 @@
 import sqlite3
-from contextlib import closing
 from pathlib import Path
 
+from basedatos import ejecutar
 from env import obtener_env
 from historial import Historial
 
@@ -16,33 +16,35 @@ class HistorialSQLite(Historial):
         self._inicializar_tablas()
 
     def _inicializar_tablas(self) -> None:
-        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
-            with conexion:
-                conexion.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS historial (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        id_conversacion TEXT NOT NULL,
-                        rol TEXT NOT NULL,
-                        texto TEXT NOT NULL,
-                        creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                    """
+        def _crear(conexion):
+            conexion.execute(
+                """
+                CREATE TABLE IF NOT EXISTS historial (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id_conversacion TEXT NOT NULL,
+                    rol TEXT NOT NULL,
+                    texto TEXT NOT NULL,
+                    creado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-                conexion.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS mensajes_procesados (
-                        id_mensaje TEXT PRIMARY KEY,
-                        procesado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                    """
+                """
+            )
+            conexion.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mensajes_procesados (
+                    id_mensaje TEXT PRIMARY KEY,
+                    procesado_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
+                """
+            )
+
+        ejecutar(self._ruta_bd, _crear)
 
     def obtener(self, id_conversacion: str, limite: int) -> list[dict]:
         if limite <= 0:
             return []
-        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
-            filas = conexion.execute(
+        filas = ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
                 """
                 SELECT rol, texto FROM historial
                 WHERE id_conversacion = ?
@@ -50,26 +52,29 @@ class HistorialSQLite(Historial):
                 LIMIT ?
                 """,
                 (id_conversacion, limite),
-            ).fetchall()
+            ).fetchall(),
+        )
         filas.reverse()
         return [{"role": rol, "content": texto} for rol, texto in filas]
 
     def agregar(self, id_conversacion: str, rol: str, texto: str) -> None:
-        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
-            with conexion:
-                conexion.execute(
-                    "INSERT INTO historial (id_conversacion, rol, texto) VALUES (?, ?, ?)",
-                    (id_conversacion, rol, texto),
-                )
+        ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "INSERT INTO historial (id_conversacion, rol, texto) VALUES (?, ?, ?)",
+                (id_conversacion, rol, texto),
+            ),
+        )
 
     def marcar_si_nuevo(self, id_mensaje: str) -> bool:
-        with closing(sqlite3.connect(self._ruta_bd)) as conexion:
+        def _insertar(conexion):
             try:
-                with conexion:
-                    conexion.execute(
-                        "INSERT INTO mensajes_procesados (id_mensaje) VALUES (?)",
-                        (id_mensaje,),
-                    )
+                conexion.execute(
+                    "INSERT INTO mensajes_procesados (id_mensaje) VALUES (?)",
+                    (id_mensaje,),
+                )
                 return True
             except sqlite3.IntegrityError:
                 return False
+
+        return ejecutar(self._ruta_bd, _insertar)

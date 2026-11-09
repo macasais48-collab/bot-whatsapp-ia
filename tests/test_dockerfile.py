@@ -39,6 +39,8 @@ def test_dockerfile_copia_los_modulos_de_la_toma_de_pedidos():
         "gunicorn.conf.py",
         "pago_pedido.py",
         "gestionar_pedido.py",
+        "basedatos.py",
+        "red_meta.py",
     ):
         assert nombre_archivo in contenido, (
             f"{nombre_archivo} no aparece en el Dockerfile: agrégalo a la línea COPY para que no "

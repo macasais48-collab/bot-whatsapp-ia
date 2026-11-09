@@ -1,0 +1,8 @@
+# Dependencia solo para tests/carga/ (la prueba de carga local). NUNCA entra a
+# la imagen de producción: el Dockerfile instala únicamente requirements.txt.
+#
+# waitress sirve de servidor WSGI para el servidor de prueba en Windows, donde
+# gunicorn no puede importarse (depende del módulo fcntl, solo Unix). Usa el
+# mismo modelo de concurrencia que gunicorn --worker-class gthread: un solo
+# proceso con un pool de hilos configurable.
+waitress==3.0.2

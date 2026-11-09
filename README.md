@@ -162,6 +162,7 @@ BotWhatsApp/
 ├── negocio.md                     # Información del negocio (editable sin tocar código)
 ├── env.py                         # Helper para leer variables de entorno (con strip)
 ├── historial.py                   # Interfaz Historial + HistorialMemoria (para pruebas)
+├── basedatos.py                   # Conexión SQLite compartida: WAL, busy_timeout y reintentos ante bloqueo
 ├── almacenamiento.py              # HistorialSQLite: historial y deduplicación de mensajes
 ├── llm/
 │   ├── base.py                    # Interfaz ProveedorIA
@@ -180,6 +181,7 @@ BotWhatsApp/
 ├── whatsapp.py                    # Envío de mensajes de texto vía WhatsApp Cloud API
 ├── mensajes_enriquecidos.py       # Envío de ubicación, botón con enlace (cta_url), imágenes, botones y listas
 ├── media_cache.py                 # Sube imágenes a Meta y cachea su media id (vence a los 25 días)
+├── red_meta.py                     # Reintentos compartidos ante 429/error de conexión con la Graph API
 ├── pedidos.py                     # Persistencia de pedidos en SQLite (tablas pedidos y pedido_items)
 ├── flujo_pedido.py                # Máquina de estados de la toma de pedidos y el pago (sin IA, sin Flask)
 ├── pago_pedido.py                 # Confirmar/rechazar un pago en verificación (compartido webhook/script)
@@ -190,7 +192,8 @@ BotWhatsApp/
 ├── verificar_suscripcion_waba.py  # Diagnóstico: apps suscritas a la cuenta de WhatsApp
 ├── suscribir_app_a_waba.py        # Suscribe esta app a la cuenta de WhatsApp
 ├── docs/capturas/                 # Capturas de pantalla de este README
-└── tests/                         # Pruebas automáticas (pytest)
+├── tests/                         # Pruebas automáticas (pytest)
+└── tests/carga/                   # Prueba de carga aparte (no es parte de la suite de pytest)
 ```
 
 ## Instalación y uso
@@ -237,7 +240,25 @@ Configuración del lado de Meta (resumen, sin IDs ni valores reales):
 pytest
 ```
 
-El proyecto tiene **240 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial, la deduplicación y los pedidos.
+El proyecto tiene **254 pruebas automáticas**, todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial, la deduplicación y los pedidos.
+
+## Rendimiento
+
+El servidor corre con gunicorn en un solo proceso y un pool de **12 hilos** (`--worker-class gthread --workers 1 --threads 12 --timeout 60`), con SQLite en modo **WAL** (lectores concurrentes sin bloquear al escritor) y reintentos cortos ante "database is locked" o ante un 429/error de conexión al enviar a WhatsApp (nunca ante un timeout, para no duplicar un mensaje que Meta ya pudo haber procesado).
+
+Con esa configuración, una prueba de carga local con 20 pedidos completos simultáneos (elegir producto, cantidad, entrega, confirmar y pagar) tardó en promedio **5.7 s** por pedido (máximo 6.1 s), sin errores, sin mensajes perdidos y sin que ningún pedido se mezclara con otro; con 50 pedidos simultáneos, el promedio sube a **11.8 s** (máximo 13.6 s) — la configuración actual sostiene con comodidad el tráfico esperado de un negocio (varios clientes a la vez), pero una ráfaga de 50 pedidos en el mismo instante ya no cumple el objetivo de menos de 5 segundos por pedido; ver `CONTEXTO_BOT_WHATSAPP.md` para el detalle completo y las mejoras que quedan pendientes para esa escala mayor.
+
+Cómo correr la prueba de carga (nunca llama a Meta ni a Anthropic de verdad; usa fakes con retraso configurable, un secreto HMAC de prueba, números ficticios y una base de datos temporal — ver `tests/carga/`):
+
+```bash
+./venv/Scripts/python.exe -m pip install -r requirements-carga.txt   # solo la primera vez
+./venv/Scripts/python.exe tests/carga/correr_carga.py --clientes 20
+./venv/Scripts/python.exe tests/carga/correr_carga.py --clientes 50 --hilos 12
+```
+
+`requirements-carga.txt` (solo `waitress`, el servidor que usa el servidor de prueba) es una dependencia de desarrollo aparte: nunca entra a la imagen de producción, que solo instala `requirements.txt`.
+
+En Windows no se puede usar gunicorn para este servidor de prueba (depende de `fcntl`, que no existe fuera de Unix); en su lugar se usa `waitress`, que sirve con el mismo modelo de concurrencia (un proceso, un pool de hilos de tamaño configurable). El resultado de cada corrida se guarda como JSON en `tests/carga/resultados/` (fuera de git).
 
 ## Despliegue con Docker
 

@@ -237,6 +237,28 @@ class Cerebro:
             logger.warning("Error inesperado al procesar 'adjuntos'; se omiten todos.", exc_info=True)
             return []
 
+    def _registrar_fallo_ia(self, error: Exception) -> None:
+        # Nunca incluye el texto del cliente, el prompt ni ningún dato personal:
+        # solo el tipo de fallo, para poder diagnosticar en producción límites de
+        # tasa (429), timeouts o errores del servidor de la IA. No se importa un
+        # SDK concreto (ProveedorIA es una interfaz común a Claude y OpenAI): se
+        # usa el atributo 'status_code' que ambos SDK exponen en sus excepciones.
+        codigo = getattr(error, "status_code", None)
+        tipo = type(error).__name__
+        if codigo == 429:
+            categoria = "limite_de_tasa_429"
+        elif "timeout" in tipo.lower():
+            categoria = "timeout"
+        elif isinstance(codigo, int) and codigo >= 500:
+            categoria = "error_del_servidor"
+        elif codigo is not None:
+            categoria = f"error_http_{codigo}"
+        else:
+            categoria = "desconocido"
+        logger.warning(
+            "Fallo al llamar a la IA (categoria=%s, tipo_excepcion=%s)", categoria, tipo
+        )
+
     def responder(self, id_conversacion: str, texto: str) -> Respuesta:
         mensajes_previos = self._historial.obtener(id_conversacion, self._max_turnos)
         mensajes = mensajes_previos + [{"role": "user", "content": texto}]
@@ -247,7 +269,11 @@ class Cerebro:
 
         try:
             prompt_completo = self._prompt_base + "\n\n" + self._construir_contexto_fecha()
-            salida = self._proveedor_ia.responder(prompt_completo, mensajes)
+            try:
+                salida = self._proveedor_ia.responder(prompt_completo, mensajes)
+            except Exception as error:
+                self._registrar_fallo_ia(error)
+                raise
             datos = json.loads(salida)
             candidato_texto = datos["respuesta"]
             candidato_derivar = datos["derivar"]

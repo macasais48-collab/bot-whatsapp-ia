@@ -3,6 +3,7 @@ import logging
 import requests
 
 from env import obtener_env
+from red_meta import peticion_con_reintentos
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,15 @@ def _enviar(cuerpo: dict) -> bool:
         "Content-Type": "application/json",
     }
 
-    try:
+    def _peticion():
         respuesta = requests.post(
             url, json=cuerpo, headers=encabezados, timeout=TIEMPO_ESPERA_SEGUNDOS
         )
         respuesta.raise_for_status()
+        return respuesta
+
+    try:
+        peticion_con_reintentos(_peticion)
         return True
     except requests.exceptions.RequestException as error:
         codigo_estado = getattr(error.response, "status_code", None)
