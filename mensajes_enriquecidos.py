@@ -23,7 +23,7 @@ def _config_whatsapp():
     return token, phone_number_id, version
 
 
-def _enviar(cuerpo: dict) -> bool:
+def _enviar_con_wamid(cuerpo: dict) -> tuple[bool, str | None]:
     token, phone_number_id, version = _config_whatsapp()
     url = f"https://graph.facebook.com/{version}/{phone_number_id}/messages"
     encabezados = {
@@ -39,8 +39,13 @@ def _enviar(cuerpo: dict) -> bool:
         return respuesta
 
     try:
-        peticion_con_reintentos(_peticion)
-        return True
+        respuesta = peticion_con_reintentos(_peticion)
+        wamid = None
+        try:
+            wamid = respuesta.json()["messages"][0]["id"]
+        except (ValueError, KeyError, IndexError, TypeError):
+            wamid = None
+        return True, wamid
     except requests.exceptions.RequestException as error:
         codigo_estado = getattr(error.response, "status_code", None)
         error_meta = {}
@@ -59,7 +64,11 @@ def _enviar(cuerpo: dict) -> bool:
             error_meta.get("error_subcode"),
             error_meta.get("message"),
         )
-        return False
+        return False, None
+
+
+def _enviar(cuerpo: dict) -> bool:
+    return _enviar_con_wamid(cuerpo)[0]
 
 
 def enviar_ubicacion(numero: str, latitud: float, longitud: float, nombre: str, direccion: str) -> bool:
@@ -78,18 +87,29 @@ def enviar_ubicacion(numero: str, latitud: float, longitud: float, nombre: str, 
     return _enviar(cuerpo)
 
 
-def enviar_imagen(numero: str, media_id: str, caption: str | None = None) -> bool:
+def _cuerpo_imagen(numero: str, media_id: str, caption: str | None) -> dict:
     imagen: dict = {"id": media_id}
     if caption:
         imagen["caption"] = caption
-    cuerpo = {
+    return {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
         "to": numero,
         "type": "image",
         "image": imagen,
     }
-    return _enviar(cuerpo)
+
+
+def enviar_imagen(numero: str, media_id: str, caption: str | None = None) -> bool:
+    return _enviar(_cuerpo_imagen(numero, media_id, caption))
+
+
+def enviar_imagen_con_wamid(numero: str, media_id: str, caption: str | None = None) -> tuple[bool, str | None]:
+    # Mismo envío que enviar_imagen, pero devuelve también el wamid — solo para
+    # el envío aparte de mejor esfuerzo del comprobante al dueño (ver
+    # flujo_pedido._avisar_dueno), que necesita asociarlo al pedido para que un
+    # "failed" posterior se loguee de forma informativa, no como "desconocido".
+    return _enviar_con_wamid(_cuerpo_imagen(numero, media_id, caption))
 
 
 def enviar_cta_url(numero: str, texto_cuerpo: str, texto_boton: str, url: str) -> bool:
@@ -159,3 +179,46 @@ def enviar_lista(numero: str, texto_cuerpo: str, texto_boton: str, secciones: li
         },
     }
     return _enviar(cuerpo)
+
+
+def enviar_plantilla(
+    numero: str,
+    nombre_plantilla: str,
+    idioma: str,
+    parametros_cuerpo: list[str],
+    payload_boton_pago_recibido: str,
+    payload_boton_no_llego: str,
+) -> tuple[bool, str | None]:
+    # Mensaje de plantilla (aprobado por Meta): la única forma de que un aviso
+    # al dueño llegue siempre, incluso fuera de la ventana de 24 horas. Ver
+    # docs/plantilla_aviso_dueno.md para la especificación exacta que Camilo
+    # crea en el WhatsApp Manager.
+    cuerpo = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": numero,
+        "type": "template",
+        "template": {
+            "name": nombre_plantilla,
+            "language": {"code": idioma},
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": texto} for texto in parametros_cuerpo],
+                },
+                {
+                    "type": "button",
+                    "sub_type": "quick_reply",
+                    "index": "0",
+                    "parameters": [{"type": "payload", "payload": payload_boton_pago_recibido}],
+                },
+                {
+                    "type": "button",
+                    "sub_type": "quick_reply",
+                    "index": "1",
+                    "parameters": [{"type": "payload", "payload": payload_boton_no_llego}],
+                },
+            ],
+        },
+    }
+    return _enviar_con_wamid(cuerpo)

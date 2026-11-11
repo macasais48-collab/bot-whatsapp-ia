@@ -146,6 +146,10 @@ class FlujoPedido:
         obtener_media_id_fn=None,
         reenviar_media_fn=None,
         imagen_qr: dict | None = None,
+        enviar_plantilla_fn=None,
+        enviar_imagen_con_wamid_fn=None,
+        plantilla_aviso_dueno_nombre: str | None = None,
+        plantilla_aviso_dueno_idioma: str | None = None,
     ) -> None:
         self._pedidos = pedidos
         self._catalogo = catalogo
@@ -160,6 +164,10 @@ class FlujoPedido:
         self._obtener_media_id_fn = obtener_media_id_fn
         self._reenviar_media_fn = reenviar_media_fn
         self._imagen_qr = imagen_qr
+        self._enviar_plantilla_fn = enviar_plantilla_fn
+        self._enviar_imagen_con_wamid_fn = enviar_imagen_con_wamid_fn
+        self._plantilla_aviso_dueno_nombre = plantilla_aviso_dueno_nombre
+        self._plantilla_aviso_dueno_idioma = plantilla_aviso_dueno_idioma
         self._manejadores = {
             "producto": self._manejar_producto,
             "cantidad": self._manejar_cantidad,
@@ -301,6 +309,15 @@ class FlujoPedido:
         if not self._numero_dueno:
             return
 
+        media_id_entrante = mensaje.get("image", {}).get("id")
+        media_id_reenviado = None
+        if media_id_entrante and self._reenviar_media_fn is not None:
+            media_id_reenviado = self._reenviar_media_fn(media_id_entrante)
+
+        if self._plantilla_aviso_dueno_nombre and self._plantilla_aviso_dueno_idioma and self._enviar_plantilla_fn is not None:
+            self._avisar_dueno_con_plantilla(pedido, media_id_reenviado)
+            return
+
         texto_resumen, _ = _construir_resumen(pedido, self._domicilio)
         texto_aviso = (
             f'Pedido #{pedido["id"]} · Cliente {enmascarar_numero(pedido["numero_cliente"])}\n'
@@ -308,11 +325,6 @@ class FlujoPedido:
             f"Antes de confirmar, verifique en su app de Bold o Nequi que llegaron "
             f'{_formatear_pesos(pedido["total"])} con referencia Pedido #{pedido["id"]}.'
         )
-
-        media_id_entrante = mensaje.get("image", {}).get("id")
-        media_id_reenviado = None
-        if media_id_entrante and self._reenviar_media_fn is not None:
-            media_id_reenviado = self._reenviar_media_fn(media_id_entrante)
 
         if media_id_reenviado is not None and self._enviar_imagen_fn is not None:
             envio_ok = self._enviar_imagen_fn(self._numero_dueno, media_id_reenviado, caption=texto_aviso)
@@ -335,6 +347,36 @@ class FlujoPedido:
                 "en pago_por_verificar; se puede confirmar con gestionar_pedido.py.",
                 pedido["id"],
             )
+
+    def _avisar_dueno_con_plantilla(self, pedido: dict, media_id_reenviado: str | None) -> None:
+        # Siempre por plantilla (ver docs/plantilla_aviso_dueno.md): es el único
+        # canal garantizado fuera de la ventana de 24 horas. El comprobante, si
+        # se pudo reenviar, se intenta mostrar APARTE como mejor esfuerzo — su
+        # fallo no afecta el aviso principal, que ya quedó garantizado.
+        ahora = self._reloj()
+        ok, wamid = self._enviar_plantilla_fn(
+            self._numero_dueno,
+            self._plantilla_aviso_dueno_nombre,
+            self._plantilla_aviso_dueno_idioma,
+            [str(pedido["id"]), _formatear_pesos(pedido["total"])],
+            f"{PREFIJO_BOTON_PAGO_RECIBIDO}{pedido['id']}",
+            f"{PREFIJO_BOTON_PAGO_NO_LLEGO}{pedido['id']}",
+        )
+        if ok and wamid:
+            self._pedidos.registrar_wamid_aviso_dueno(wamid, pedido["id"], "plantilla", ahora)
+        if not ok:
+            logger.warning(
+                "No se pudo enviar la plantilla de aviso al dueño del pedido #%s.", pedido["id"]
+            )
+
+        if media_id_reenviado is not None and self._enviar_imagen_con_wamid_fn is not None:
+            ok_comprobante, wamid_comprobante = self._enviar_imagen_con_wamid_fn(
+                self._numero_dueno, media_id_reenviado, caption=f'Comprobante del pedido #{pedido["id"]}'
+            )
+            if ok_comprobante and wamid_comprobante:
+                self._pedidos.registrar_wamid_aviso_dueno(
+                    wamid_comprobante, pedido["id"], "comprobante", ahora
+                )
 
     def _derivar_sin_cancelar(self, numero: str, pedido: dict, ahora: float, texto: str) -> None:
         self._pedidos.tocar(pedido["id"], ahora)

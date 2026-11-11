@@ -74,6 +74,28 @@ class ReenviarMediaFalso:
         return self._media_id
 
 
+class EnviosPlantilla:
+    def __init__(self, ok=True, wamid="wamid-plantilla-1"):
+        self.llamadas = []
+        self._ok = ok
+        self._wamid = wamid
+
+    def __call__(self, numero, nombre_plantilla, idioma, parametros_cuerpo, payload_recibido, payload_no_llego):
+        self.llamadas.append((numero, nombre_plantilla, idioma, parametros_cuerpo, payload_recibido, payload_no_llego))
+        return self._ok, (self._wamid if self._ok else None)
+
+
+class EnviosImagenConWamid:
+    def __init__(self, ok=True, wamid="wamid-comprobante-1"):
+        self.llamadas = []
+        self._ok = ok
+        self._wamid = wamid
+
+    def __call__(self, numero, media_id, caption=None):
+        self.llamadas.append((numero, media_id, caption))
+        return self._ok, (self._wamid if self._ok else None)
+
+
 def _crear_flujo(tmp_path, reloj=lambda: 1000.0, catalogo=None, domicilio=None):
     pedidos = Pedidos(tmp_path / "pedidos.db")
     texto, botones, lista = EnviosTexto(), EnviosBotones(), EnviosLista()
@@ -125,6 +147,10 @@ def _crear_flujo_pago(
     enviar_imagen_fn=None,
     obtener_media_id_fn=None,
     reenviar_media_fn=None,
+    enviar_plantilla_fn=None,
+    enviar_imagen_con_wamid_fn=None,
+    plantilla_aviso_dueno_nombre=None,
+    plantilla_aviso_dueno_idioma=None,
 ):
     pedidos = Pedidos(tmp_path / "pedidos.db")
     texto, botones, lista = EnviosTexto(), EnviosBotones(), EnviosLista()
@@ -148,6 +174,10 @@ def _crear_flujo_pago(
         obtener_media_id_fn=obtener_media_id_fn,
         reenviar_media_fn=reenviar_media_fn,
         imagen_qr=imagen_qr,
+        enviar_plantilla_fn=enviar_plantilla_fn,
+        enviar_imagen_con_wamid_fn=enviar_imagen_con_wamid_fn,
+        plantilla_aviso_dueno_nombre=plantilla_aviso_dueno_nombre,
+        plantilla_aviso_dueno_idioma=plantilla_aviso_dueno_idioma,
     )
     return flujo, pedidos, texto, botones, lista, enviar_imagen_fn, obtener_media_id_fn, reenviar_media_fn
 
@@ -735,6 +765,103 @@ def test_imagen_en_pago_pendiente_pasa_a_pago_por_verificar_y_avisa_al_dueno(tmp
     assert botones.llamadas[-1][0] == numero_dueno
     ids_ofrecidos = [b["id"] for b in botones.llamadas[-1][2]]
     assert ids_ofrecidos == [f"pago_recibido_{pedido['id']}", f"pago_no_llego_{pedido['id']}"]
+
+
+def test_con_plantilla_configurada_el_aviso_al_dueno_usa_siempre_la_plantilla(tmp_path):
+    numero_dueno = "573005554433"
+    plantilla = EnviosPlantilla()
+    imagen_con_wamid = EnviosImagenConWamid()
+    flujo, pedidos, texto, botones, lista, imagen, media_id_fn, reenviar = _crear_flujo_pago(
+        tmp_path,
+        numero_dueno=numero_dueno,
+        enviar_plantilla_fn=plantilla,
+        enviar_imagen_con_wamid_fn=imagen_con_wamid,
+        plantilla_aviso_dueno_nombre="aviso_pago_pendiente_verificacion",
+        plantilla_aviso_dueno_idioma="es",
+    )
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_imagen("comprobante-abc"))
+
+    pedido = pedidos.obtener_activo(numero)
+    assert plantilla.llamadas == [
+        (
+            numero_dueno,
+            "aviso_pago_pendiente_verificacion",
+            "es",
+            [str(pedido["id"]), "$16.000"],
+            f"pago_recibido_{pedido['id']}",
+            f"pago_no_llego_{pedido['id']}",
+        )
+    ]
+    # El wamid de la plantilla queda asociado al pedido con tipo "plantilla".
+    assert pedidos.info_aviso_dueno_por_wamid("wamid-plantilla-1") == {
+        "pedido_id": pedido["id"], "tipo": "plantilla",
+    }
+    # El comprobante se intenta mostrar aparte, y su wamid queda asociado con tipo "comprobante".
+    assert imagen_con_wamid.llamadas[-1][0] == numero_dueno
+    assert imagen_con_wamid.llamadas[-1][1] == "media-reenviado-1"
+    assert pedidos.info_aviso_dueno_por_wamid("wamid-comprobante-1") == {
+        "pedido_id": pedido["id"], "tipo": "comprobante",
+    }
+    # Nunca se envían además los botones libres [Pago recibido]/[No ha llegado]
+    # al dueño (serían duplicados: la plantilla ya los trae).
+    assert all(llamada[0] != numero_dueno for llamada in botones.llamadas)
+    # Tampoco se usa el texto/imagen libre de siempre hacia el dueño.
+    assert all(llamada[0] != numero_dueno for llamada in imagen.llamadas)
+
+
+def test_con_plantilla_configurada_si_falla_el_comprobante_no_afecta_el_aviso_principal(tmp_path):
+    numero_dueno = "573005554433"
+    plantilla = EnviosPlantilla(ok=True)
+    imagen_con_wamid = EnviosImagenConWamid(ok=False)
+    flujo, pedidos, texto, botones, lista, imagen, media_id_fn, reenviar = _crear_flujo_pago(
+        tmp_path,
+        numero_dueno=numero_dueno,
+        enviar_plantilla_fn=plantilla,
+        enviar_imagen_con_wamid_fn=imagen_con_wamid,
+        plantilla_aviso_dueno_nombre="aviso_pago_pendiente_verificacion",
+        plantilla_aviso_dueno_idioma="es",
+    )
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_imagen("comprobante-abc"))
+
+    pedido = pedidos.obtener_activo(numero)
+    assert plantilla.llamadas != []
+    assert pedidos.info_aviso_dueno_por_wamid("wamid-plantilla-1") == {
+        "pedido_id": pedido["id"], "tipo": "plantilla",
+    }
+    # El comprobante falló: no se registra ningún wamid para él.
+    assert pedidos.info_aviso_dueno_por_wamid("wamid-comprobante-1") is None
+
+
+def test_sin_plantilla_configurada_el_aviso_al_dueno_sigue_igual_que_antes(tmp_path):
+    numero_dueno = "573005554433"
+    plantilla = EnviosPlantilla()
+    imagen_con_wamid = EnviosImagenConWamid()
+    flujo, pedidos, texto, botones, lista, imagen, media_id_fn, reenviar = _crear_flujo_pago(
+        tmp_path,
+        numero_dueno=numero_dueno,
+        enviar_plantilla_fn=plantilla,
+        enviar_imagen_con_wamid_fn=imagen_con_wamid,
+        # plantilla_aviso_dueno_nombre/idioma quedan sin configurar.
+    )
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_imagen("comprobante-abc"))
+
+    assert plantilla.llamadas == []
+    assert imagen_con_wamid.llamadas == []
+    # Comportamiento de siempre: texto libre con la imagen reenviada + botones.
+    assert imagen.llamadas[-1][0] == numero_dueno
+    assert botones.llamadas[-1][0] == numero_dueno
 
 
 def test_sin_numero_dueno_no_se_intenta_ningun_envio_ni_descarga(tmp_path):

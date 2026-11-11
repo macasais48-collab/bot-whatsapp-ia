@@ -271,3 +271,24 @@ def test_una_base_del_esquema_anterior_sin_metodo_pago_se_migra_sin_perder_datos
     assert pedido["numero_cliente"] == "573001112233"
     assert pedido["estado"] == "recibido"
     assert pedido["metodo_pago"] is None
+
+
+def test_registrar_y_consultar_wamid_de_aviso_al_dueno(tmp_path):
+    pedidos = _crear_pedidos(tmp_path)
+    pedido_id = pedidos.crear_en_construccion("573001112233", "tamales", ahora=1000.0)
+
+    pedidos.registrar_wamid_aviso_dueno("wamid-plantilla-1", pedido_id, "plantilla", ahora=1001.0)
+    pedidos.registrar_wamid_aviso_dueno("wamid-comprobante-1", pedido_id, "comprobante", ahora=1002.0)
+
+    assert pedidos.info_aviso_dueno_por_wamid("wamid-plantilla-1") == {
+        "pedido_id": pedido_id, "tipo": "plantilla",
+    }
+    assert pedidos.info_aviso_dueno_por_wamid("wamid-comprobante-1") == {
+        "pedido_id": pedido_id, "tipo": "comprobante",
+    }
+
+
+def test_info_aviso_dueno_por_wamid_desconocido_devuelve_none(tmp_path):
+    pedidos = _crear_pedidos(tmp_path)
+
+    assert pedidos.info_aviso_dueno_por_wamid("wamid-que-no-existe") is None

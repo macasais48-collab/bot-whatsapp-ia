@@ -71,6 +71,17 @@ class Pedidos:
             if "metodo_pago" not in columnas_existentes:
                 conexion.execute("ALTER TABLE pedidos ADD COLUMN metodo_pago TEXT")
 
+            conexion.execute(
+                """
+                CREATE TABLE IF NOT EXISTS avisos_dueno_wamid (
+                    wamid TEXT PRIMARY KEY,
+                    pedido_id INTEGER NOT NULL,
+                    tipo TEXT NOT NULL,
+                    creado_en REAL NOT NULL
+                )
+                """
+            )
+
         ejecutar(self._ruta_bd, _crear)
 
     def _fila_a_dict(self, fila) -> dict:
@@ -390,3 +401,28 @@ class Pedidos:
                 (ESTADO_PAGO_PENDIENTE, "pago_pendiente", ahora, pedido_id),
             ),
         )
+
+    def registrar_wamid_aviso_dueno(self, wamid: str, pedido_id: int, tipo: str, ahora: float) -> None:
+        # Sin contenido ni datos personales: solo el id de mensaje (una cadena
+        # opaca que Meta genera), el número de pedido y si es el aviso principal
+        # (plantilla) o el envío aparte de mejor esfuerzo (comprobante) — ver
+        # webhook._procesar_estado, que usa esto para interpretar un "failed".
+        ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "INSERT OR REPLACE INTO avisos_dueno_wamid (wamid, pedido_id, tipo, creado_en) "
+                "VALUES (?, ?, ?, ?)",
+                (wamid, pedido_id, tipo, ahora),
+            ),
+        )
+
+    def info_aviso_dueno_por_wamid(self, wamid: str) -> dict | None:
+        fila = ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "SELECT pedido_id, tipo FROM avisos_dueno_wamid WHERE wamid = ?", (wamid,)
+            ).fetchone(),
+        )
+        if fila is None:
+            return None
+        return {"pedido_id": fila[0], "tipo": fila[1]}

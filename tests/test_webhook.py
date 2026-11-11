@@ -185,7 +185,15 @@ def _payload_mensaje_lista(id_mensaje, numero, id_fila):
     )
 
 
-def _payload_estado(id_mensaje, numero):
+def _payload_estado(id_mensaje, numero, status="delivered", errors=None):
+    estado = {
+        "id": id_mensaje,
+        "status": status,
+        "timestamp": "1700000000",
+        "recipient_id": numero,
+    }
+    if errors is not None:
+        estado["errors"] = errors
     return {
         "object": "whatsapp_business_account",
         "entry": [
@@ -197,20 +205,21 @@ def _payload_estado(id_mensaje, numero):
                         "value": {
                             "messaging_product": "whatsapp",
                             "metadata": {"phone_number_id": "999"},
-                            "statuses": [
-                                {
-                                    "id": id_mensaje,
-                                    "status": "delivered",
-                                    "timestamp": "1700000000",
-                                    "recipient_id": numero,
-                                }
-                            ],
+                            "statuses": [estado],
                         },
                     }
                 ],
             }
         ],
     }
+
+
+def _payload_boton_plantilla(id_mensaje, numero, payload_boton):
+    # Respuesta a un botón de respuesta rápida en una PLANTILLA (distinto de un
+    # button_reply de un mensaje interactivo libre): llega como type "button".
+    return _payload_mensaje(
+        id_mensaje, numero, {"type": "button", "button": {"payload": payload_boton, "text": "x"}}
+    )
 
 
 @pytest.fixture
@@ -381,6 +390,84 @@ def test_post_notificacion_de_estado_devuelve_200_sin_respuesta(fabrica_cliente,
 
     assert respuesta.status_code == 200
     assert envios.llamadas == []
+
+
+@pytest.mark.parametrize("status", ["sent", "delivered", "read"])
+def test_statuses_sent_delivered_read_nunca_generan_ninguna_linea_de_log(fabrica_cliente, caplog, status):
+    cliente = fabrica_cliente()
+    caplog.set_level(logging.INFO, logger="webhook")
+    payload = _payload_estado("wamid.1", "573001112233", status=status)
+
+    _post_con_firma(cliente, payload)
+
+    # La única línea esperada es el log de acceso por petición (método/ruta/código);
+    # ninguna otra línea debe mencionar el status en sí.
+    mensajes = "\n".join(r.getMessage() for r in caplog.records)
+    assert "status" not in mensajes.lower()
+    assert "wamid" not in mensajes.lower()
+
+
+def test_status_failed_sin_wamid_asociado_registra_advertencia_como_pedido_desconocido(
+    fabrica_cliente, caplog
+):
+    cliente = fabrica_cliente()
+    caplog.set_level(logging.WARNING, logger="webhook")
+    payload = _payload_estado(
+        "wamid.nunca-registrado", "573001112233", status="failed",
+        errors=[{"code": 131049, "title": "This message was not delivered..."}],
+    )
+
+    respuesta = _post_con_firma(cliente, payload)
+
+    assert respuesta.status_code == 200
+    mensajes = "\n".join(r.getMessage() for r in caplog.records)
+    assert "131049" in mensajes
+    assert "desconocido" in mensajes
+    assert "573001112233" not in mensajes  # número completo nunca en el log
+
+
+def test_status_failed_con_wamid_de_plantilla_registra_advertencia_con_el_pedido(
+    fabrica_cliente, caplog, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    id_pedido = _pedido_en_verificacion(pedidos)
+    pedidos.registrar_wamid_aviso_dueno("wamid.plantilla", id_pedido, "plantilla", ahora=1000.0)
+    cliente = fabrica_cliente(pedidos=pedidos)
+    caplog.set_level(logging.WARNING, logger="webhook")
+    payload = _payload_estado(
+        "wamid.plantilla", NUMERO_DUENO_DE_PRUEBA, status="failed",
+        errors=[{"code": 130472, "title": "Error de plantilla"}],
+    )
+
+    _post_con_firma(cliente, payload)
+
+    mensajes = "\n".join(r.getMessage() for r in caplog.records)
+    assert "130472" in mensajes
+    assert f"pedido={id_pedido}" in mensajes or str(id_pedido) in mensajes
+    assert NUMERO_DUENO_DE_PRUEBA not in mensajes
+
+
+def test_status_failed_con_wamid_de_comprobante_es_informativo_no_advertencia(
+    fabrica_cliente, caplog, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    id_pedido = _pedido_en_verificacion(pedidos)
+    pedidos.registrar_wamid_aviso_dueno("wamid.comprobante", id_pedido, "comprobante", ahora=1000.0)
+    cliente = fabrica_cliente(pedidos=pedidos)
+    caplog.set_level(logging.INFO, logger="webhook")
+    payload = _payload_estado(
+        "wamid.comprobante", NUMERO_DUENO_DE_PRUEBA, status="failed",
+        errors=[{"code": 131047, "title": "Ventana de 24 horas"}],
+    )
+
+    _post_con_firma(cliente, payload)
+
+    advertencias = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert advertencias == []
+    informativos = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.INFO)
+    assert str(id_pedido) in informativos
+    assert "desconocido" not in informativos
+    assert "plantilla" in informativos.lower()
 
 
 def test_post_mensaje_duplicado_se_procesa_una_sola_vez(fabrica_cliente, envios):
@@ -1182,6 +1269,60 @@ def test_boton_desconocido_del_dueno_recibe_el_recordatorio_fijo(fabrica_cliente
     assert envios.llamadas == [
         (NUMERO_DUENO_DE_PRUEBA, "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar.")
     ]
+
+
+def test_boton_de_plantilla_del_dueno_confirma_el_pago_igual_que_el_interactivo(
+    fabrica_cliente, envios, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    id_pedido = _pedido_en_verificacion(pedidos, numero_cliente)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    respuesta = _post_con_firma(
+        cliente, _payload_boton_plantilla("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"pago_recibido_{id_pedido}")
+    )
+
+    assert respuesta.status_code == 200
+    assert pedidos.obtener(id_pedido)["estado"] == "pagado"
+    llamada_cliente = next(l for l in envios.llamadas if l[0] == numero_cliente)
+    assert "confirmado" in llamada_cliente[1].lower()
+
+
+def test_boton_de_plantilla_desde_otro_numero_no_confirma_nada(fabrica_cliente, envios, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    id_pedido = _pedido_en_verificacion(pedidos, numero_cliente)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+    otro_numero = "573009998877"
+
+    respuesta = _post_con_firma(
+        cliente, _payload_boton_plantilla("wamid.1", otro_numero, f"pago_recibido_{id_pedido}")
+    )
+
+    assert respuesta.status_code == 200
+    assert pedidos.obtener(id_pedido)["estado"] == "pago_por_verificar"
+    assert not any(l[0] == numero_cliente for l in envios.llamadas)
+
+
+def test_doble_pulsacion_del_boton_de_plantilla_no_repite_el_aviso_al_cliente(
+    fabrica_cliente, envios, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    id_pedido = _pedido_en_verificacion(pedidos, numero_cliente)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(
+        cliente, _payload_boton_plantilla("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"pago_recibido_{id_pedido}")
+    )
+    llamadas_al_cliente_tras_la_primera = [l for l in envios.llamadas if l[0] == numero_cliente]
+    _post_con_firma(
+        cliente, _payload_boton_plantilla("wamid.2", NUMERO_DUENO_DE_PRUEBA, f"pago_recibido_{id_pedido}")
+    )
+
+    llamadas_al_cliente_tras_la_segunda = [l for l in envios.llamadas if l[0] == numero_cliente]
+    assert llamadas_al_cliente_tras_la_segunda == llamadas_al_cliente_tras_la_primera
 
 
 def test_un_pedido_en_pago_pendiente_bloquea_iniciar_un_pedido_nuevo(

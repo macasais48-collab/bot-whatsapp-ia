@@ -135,7 +135,11 @@ Los pedidos se guardan en la misma base SQLite (`pedidos.py`, tablas `pedidos` y
 
 Al tocar "Confirmar", el bot pregunta cómo desea pagar: **efectivo** (el pedido queda confirmado de inmediato, con pago contra entrega o al recoger) o **QR / transferencia** (envía la imagen del QR de ejemplo con el valor exacto y el número de pedido como referencia, y pide el comprobante). El valor a pagar siempre sale del total ya calculado por código — nunca de la IA ni de un texto del cliente.
 
-Cuando el cliente envía la foto del comprobante, el pedido pasa a verificación y, si está configurada la variable `NUMERO_DUENO`, el bot le reenvía al dueño el comprobante (descargado y vuelto a subir en memoria, sin escribir nada a disco ni a la base de datos — la documentación oficial de Meta no ofrece una forma de reenviar un media id entrante directamente) junto con botones `[Pago recibido] [No ha llegado]`. Solo un mensaje que llegue exactamente de ese número puede confirmar o rechazar un pago; cualquier otro mensaje del dueño (un "hola", un botón que ya no aplica) recibe un recordatorio fijo de que ese es el número del negocio, sin pasar nunca por la IA ni por el flujo de pedidos. Si ese aviso falla (por ejemplo, por la ventana de 24 horas de WhatsApp sin un mensaje previo del dueño), se registra una advertencia y el pedido queda igual en verificación — al cliente nunca le llega ese error.
+Cuando el cliente envía la foto del comprobante, el pedido pasa a verificación y, si está configurada la variable `NUMERO_DUENO`, el bot avisa al dueño con botones `[Pago recibido] [No ha llegado]`. Solo un mensaje que llegue exactamente de ese número puede confirmar o rechazar un pago; cualquier otro mensaje del dueño (un "hola", un botón que ya no aplica) recibe un recordatorio fijo de que ese es el número del negocio, sin pasar nunca por la IA ni por el flujo de pedidos. El botón se acepta en los dos formatos que WhatsApp puede entregar: un mensaje interactivo libre o la respuesta a una plantilla (ver abajo) — mismas validaciones en ambos casos.
+
+**Aviso al dueño siempre por plantilla**: si además de `NUMERO_DUENO` están configuradas `PLANTILLA_AVISO_DUENO_NOMBRE` y `PLANTILLA_AVISO_DUENO_IDIOMA` (una plantilla de WhatsApp aprobada por Meta — ver `docs/plantilla_aviso_dueno.md` para la especificación exacta y cómo crearla en el WhatsApp Manager), el aviso principal se envía **siempre** por esa plantilla, con el número de pedido y el total como variables: es el único canal garantizado fuera de la ventana de 24 horas, así que no depende de que el dueño le haya escrito al bot recientemente. El comprobante del cliente (reenviado — descargado y vuelto a subir en memoria, sin escribir nada a disco ni a la base de datos; la documentación oficial de Meta no ofrece una forma de reenviar un media id entrante directamente) se intenta mostrar **aparte**, como un envío de mejor esfuerzo: si falla, no afecta el aviso principal, que ya quedó garantizado. Si cualquiera de las dos variables de la plantilla no está configurada, el bot usa el mensaje libre de siempre (texto o imagen + botones), exactamente igual que antes de que existiera esta plantilla.
+
+**Statuses del webhook**: el bot ahora lee las notificaciones de estado que manda Meta (`sent`/`delivered`/`read`/`failed`) — las tres primeras nunca generan ningún log; un `failed` se registra con el código y el título del error de Meta, el teléfono enmascarado, y el número de pedido si el mensaje que falló era un aviso al dueño (asociado por el id de mensaje, `wamid`, en una tabla mínima sin contenido ni datos personales). Si el que falla es el envío aparte del comprobante (mejor esfuerzo), el log es informativo, no una advertencia, y nunca aparece como "pedido desconocido".
 
 Como respaldo (o si `NUMERO_DUENO` no está configurada), `gestionar_pedido.py` permite listar los pedidos en espera y confirmar o rechazar un pago desde la línea de comandos dentro del contenedor:
 
@@ -202,6 +206,7 @@ BotWhatsApp/
 ├── verificar_suscripcion_waba.py  # Diagnóstico: apps suscritas a la cuenta de WhatsApp
 ├── suscribir_app_a_waba.py        # Suscribe esta app a la cuenta de WhatsApp
 ├── docs/capturas/                 # Capturas de pantalla de este README
+├── docs/plantilla_aviso_dueno.md  # Especificación de la plantilla del aviso al dueño (WhatsApp Manager)
 ├── tests/                         # Pruebas automáticas (pytest)
 ├── tests/carga/                   # Prueba de carga aparte (no es parte de la suite de pytest)
 └── clientes/<clave>/              # Perfiles de cliente privados (fuera de git y de la imagen; ver "Perfiles de cliente")
@@ -251,7 +256,7 @@ Configuración del lado de Meta (resumen, sin IDs ni valores reales):
 pytest
 ```
 
-El proyecto tiene **265 pruebas automáticas** (una se omite en Windows sin privilegios de administrador: una prueba de defensa contra enlaces simbólicos), todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial, la deduplicación y los pedidos.
+El proyecto tiene **283 pruebas automáticas** (una se omite en Windows sin privilegios de administrador: una prueba de defensa contra enlaces simbólicos), todas sin red real: simulan el proveedor de IA y el envío por WhatsApp, y usan bases de datos temporales para el historial, la deduplicación y los pedidos.
 
 ## Rendimiento
 

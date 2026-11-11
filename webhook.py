@@ -18,7 +18,9 @@ from mensajes_enriquecidos import (
     enviar_botones,
     enviar_cta_url,
     enviar_imagen,
+    enviar_imagen_con_wamid,
     enviar_lista,
+    enviar_plantilla,
     enviar_ubicacion,
 )
 from pedidos import Pedidos
@@ -170,11 +172,15 @@ def crear_app(
     enviar_lista_fn=enviar_lista,
     obtener_media_id_fn=obtener_media_id,
     reenviar_media_fn=reenviar_media_entrante,
+    enviar_plantilla_fn=enviar_plantilla,
+    enviar_imagen_con_wamid_fn=enviar_imagen_con_wamid,
     recursos: dict | None = None,
     pedidos: Pedidos | None = None,
     perfil: str | None = None,
     mensaje_derivacion: str | None = None,
     numero_dueno: str | None = None,
+    plantilla_aviso_dueno_nombre: str | None = None,
+    plantilla_aviso_dueno_idioma: str | None = None,
     reloj=time.time,
 ) -> Flask:
     app = Flask(__name__)
@@ -189,6 +195,19 @@ def crear_app(
         valor_numero_dueno = obtener_env("NUMERO_DUENO")
         numero_dueno = normalizar_numero(valor_numero_dueno) if valor_numero_dueno else None
     numero_dueno = numero_dueno or None
+    if plantilla_aviso_dueno_nombre is None:
+        plantilla_aviso_dueno_nombre = obtener_env("PLANTILLA_AVISO_DUENO_NOMBRE") or None
+    if plantilla_aviso_dueno_idioma is None:
+        plantilla_aviso_dueno_idioma = obtener_env("PLANTILLA_AVISO_DUENO_IDIOMA") or None
+    if bool(plantilla_aviso_dueno_nombre) != bool(plantilla_aviso_dueno_idioma):
+        # Solo una de las dos configurada: se trata como "no configurada" (cae
+        # al aviso libre de siempre) en vez de romper el arranque por esto.
+        logger.warning(
+            "PLANTILLA_AVISO_DUENO_NOMBRE y PLANTILLA_AVISO_DUENO_IDIOMA deben configurarse "
+            "juntas; con solo una de las dos, el aviso al dueño usa el mensaje libre de siempre."
+        )
+        plantilla_aviso_dueno_nombre = None
+        plantilla_aviso_dueno_idioma = None
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = _resolver_ruta_negocio()
     if cerebro is None:
@@ -220,6 +239,10 @@ def crear_app(
         obtener_media_id_fn=obtener_media_id_fn,
         reenviar_media_fn=reenviar_media_fn,
         imagen_qr=recursos.get("imagenes", {}).get("qr_ejemplo"),
+        enviar_plantilla_fn=enviar_plantilla_fn,
+        enviar_imagen_con_wamid_fn=enviar_imagen_con_wamid_fn,
+        plantilla_aviso_dueno_nombre=plantilla_aviso_dueno_nombre,
+        plantilla_aviso_dueno_idioma=plantilla_aviso_dueno_idioma,
     )
 
     @app.after_request
@@ -328,11 +351,54 @@ def crear_app(
                     continue
                 _enviar_adjunto(numero_remitente, adjunto)
 
+    def _procesar_estado(estado: dict) -> None:
+        # sent/delivered/read nunca generan ninguna línea de log, a propósito.
+        # Solo "failed" (Meta aceptó el mensaje pero no lo entregó) se registra,
+        # nunca el contenido de ningún mensaje.
+        if estado.get("status") != "failed":
+            return
+
+        wamid = estado.get("id")
+        numero_enmascarado = enmascarar_numero(estado.get("recipient_id", ""))
+        errores = estado.get("errors") or []
+        codigo = errores[0].get("code") if errores else None
+        titulo = errores[0].get("title") if errores else None
+        info = pedidos.info_aviso_dueno_por_wamid(wamid) if wamid else None
+
+        if info is not None and info["tipo"] == "comprobante":
+            # Caso esperado si la ventana de 24 horas está cerrada: el aviso
+            # principal ya se garantizó por plantilla, así que esto es solo
+            # informativo, nunca una advertencia, y nunca "pedido desconocido".
+            logger.info(
+                "El comprobante del pedido #%s no se entregó aparte; el aviso principal al "
+                "dueño fue por plantilla.",
+                info["pedido_id"],
+            )
+            return
+
+        pedido_id = info["pedido_id"] if info is not None else "desconocido"
+        logger.warning(
+            "Mensaje no entregado (status=failed, codigo=%s, titulo=%s, destino=%s, pedido=%s)",
+            codigo, titulo, numero_enmascarado, pedido_id,
+        )
+
     def _id_pedido_desde_boton(id_boton: str, prefijo: str) -> int | None:
         try:
             return int(id_boton[len(prefijo):])
         except ValueError:
             return None
+
+    def _id_boton_entrante(mensaje: dict) -> str | None:
+        # Un botón de respuesta rápida en un mensaje libre llega como
+        # interactive.button_reply.id; el mismo tipo de botón en una PLANTILLA
+        # (ver docs/plantilla_aviso_dueno.md) llega distinto: type == "button",
+        # con el payload en mensaje["button"]["payload"]. Se aceptan los dos
+        # formatos con exactamente las mismas validaciones.
+        if mensaje.get("type") == "interactive":
+            return mensaje.get("interactive", {}).get("button_reply", {}).get("id")
+        if mensaje.get("type") == "button":
+            return mensaje.get("button", {}).get("payload")
+        return None
 
     def _procesar_respuesta_dueno(mensaje: dict) -> None:
         # Mensajes del dueño NUNCA llegan a cerebro.responder ni a flujo_pedido:
@@ -340,9 +406,8 @@ def crear_app(
         # cualquier otra cosa (un "hola" para abrir la ventana de 24 horas, un
         # botón desconocido) recibe un texto fijo recordándole qué es este número.
         ahora = reloj()
-        interactivo = mensaje.get("interactive", {})
-        if interactivo.get("type") == "button_reply":
-            id_boton = interactivo.get("button_reply", {}).get("id", "")
+        id_boton = _id_boton_entrante(mensaje)
+        if id_boton is not None:
             if id_boton.startswith(pago_pedido.PREFIJO_BOTON_PAGO_RECIBIDO):
                 pedido_id = _id_pedido_desde_boton(id_boton, pago_pedido.PREFIJO_BOTON_PAGO_RECIBIDO)
                 if pedido_id is not None:
@@ -455,7 +520,13 @@ def crear_app(
                 valor = cambio.get("value", {})
 
                 if "statuses" in valor:
-                    # Notificación de estado (enviado/entregado/leído): no requiere respuesta.
+                    for estado in valor.get("statuses", []):
+                        try:
+                            _procesar_estado(estado)
+                        except Exception:
+                            logger.exception("Error inesperado al procesar un status entrante.")
+                    # Una notificación de estado nunca trae "messages" en el mismo
+                    # value (son mutuamente excluyentes); no requiere respuesta.
                     continue
 
                 for mensaje in valor.get("messages", []):
