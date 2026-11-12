@@ -153,6 +153,25 @@ docker compose exec bot-whatsapp python gestionar_pedido.py no-llego <numero_de_
 
 El script enmascara siempre el teléfono del cliente y pide una confirmación explícita antes de aplicar el cambio. Las palabras clave para cancelar o pedir una persona siguen funcionando durante el pago, salvo que ya se envió un comprobante: ahí "cancelar" ya no cancela (hay dinero en camino) y, junto con "asesor", solo deriva a una persona sin tocar el estado del pedido. El timeout de 30 minutos tampoco aplica mientras se espera un pago.
 
+### Estados del pedido
+
+Un pedido confirmado (en efectivo o con el pago por QR ya verificado) queda **en preparación**, y desde ahí avanza un paso a la vez: a domicilio, *en preparación → en camino → entregado*; para recoger, *en preparación → listo para recoger → entregado*. El estado de entrega se guarda en una columna aparte (`estado_entrega`), sin tocar el estado de pago.
+
+El dueño escribe **pedidos** (sin importar mayúsculas ni tildes) desde `NUMERO_DUENO` y recibe una lista de los pedidos activos, del más antiguo al más reciente, con el número de pedido, la forma de entrega, el estado y el total (sin teléfono ni dirección). Si hay más de 10, se muestran 9 y una fila "Ver más" con los siguientes. Al tocar un pedido, recibe su detalle y **un solo botón** con el siguiente paso válido (p. ej. "Marcar en camino"). Al tocarlo, el cliente recibe un aviso corto en texto libre ("Su pedido #N va en camino.") y el dueño una confirmación. El botón lleva el número de pedido y el paso exacto, así que una doble pulsación o un botón viejo nunca aplica un cambio que ya no corresponde ni repite el aviso al cliente.
+
+El aviso al cliente es un mensaje libre: en este tipo de negocio la ventana de 24 horas suele estar abierta, porque el cliente acaba de escribir para hacer el pedido. Si está cerrada, Meta lo rechaza con el código 131047; el cambio de estado igual queda aplicado y el fallo se registra en el log como informativo, asociado al pedido.
+
+Los pedidos que ya estaban confirmados antes de existir esta función se migran como **entregados**, para que no aparezcan como pendientes.
+
+Respaldo desde la línea de comandos:
+
+```bash
+docker compose exec bot-whatsapp python gestionar_pedido.py estado listar
+docker compose exec bot-whatsapp python gestionar_pedido.py estado avanzar <numero_de_pedido>
+```
+
+Igual que los comandos de pago, el script enmascara el teléfono del cliente y pide confirmación explícita antes de aplicar el cambio.
+
 **Logging bajo gunicorn:** `gunicorn.conf.py` (cargado con `--config` desde el `CMD` del Dockerfile) configura el logging en cada worker (`post_fork`), para que los eventos de `webhook.py`, `flujo_pedido.py` y `pago_pedido.py` (p. ej. "Pedido #7 confirmado", "mensaje antiguo ignorado") se vean con `docker compose logs`. El log de accesos propio de gunicorn está desactivado para no duplicar la línea que ya registra `webhook.py` por cada petición (método, ruta sin cadena de consulta, código de estado) — esa línea nunca incluye el verify token de Meta, y las peticiones a `/salud` del healthcheck no se registran. Los eventos de la aplicación nunca incluyen el número de teléfono completo (solo los últimos 4 dígitos, vía `telefono.py`), el texto de los mensajes, direcciones, ubicaciones ni el contenido de un comprobante de pago — solo el hecho de que algo pasó.
 
 ### Créditos de fotos
@@ -203,7 +222,8 @@ BotWhatsApp/
 ├── perfiles_negocio.py             # Resolución de perfil/recursos activos (sin Flask; usado por webhook.py y gestionar_pedido.py)
 ├── flujo_pedido.py                # Máquina de estados de la toma de pedidos y el pago (sin IA, sin Flask)
 ├── pago_pedido.py                 # Confirmar/rechazar un pago y avisar al dueño de un pedido nuevo (compartido webhook/script)
-├── gestionar_pedido.py             # CLI de respaldo: listar y confirmar pagos dentro del contenedor
+├── estado_pedido.py               # Estados de entrega del pedido: lista del dueño, botón del siguiente paso, aviso al cliente
+├── gestionar_pedido.py             # CLI de respaldo: pagos y estados de entrega dentro del contenedor
 ├── telefono.py                    # Enmascarado/normalización de número de teléfono
 ├── gunicorn.conf.py                # Logging de gunicorn (stdout; accesslog propio desactivado)
 ├── verificar_config.py            # Verifica que .env tenga las variables, sin exponer valores

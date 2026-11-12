@@ -1,6 +1,6 @@
 import requests
 
-from mensajes_enriquecidos import enviar_imagen_con_wamid, enviar_plantilla
+from mensajes_enriquecidos import enviar_imagen_con_wamid, enviar_plantilla, enviar_texto_con_wamid
 
 
 class _RespuestaFalsa:
@@ -121,3 +121,36 @@ def test_enviar_imagen_con_wamid_devuelve_false_y_ningun_wamid_ante_un_error(mon
 
     assert ok is False
     assert wamid is None
+
+
+def test_enviar_texto_con_wamid_usa_el_mismo_cuerpo_de_texto_y_devuelve_el_wamid(monkeypatch):
+    _configurar_env(monkeypatch)
+
+    def post_falso(url, json, headers, timeout):
+        assert json == {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": "573001112233",
+            "type": "text",
+            "text": {"preview_url": False, "body": "Su pedido #7 va en camino."},
+        }
+        return _RespuestaFalsa({"messages": [{"id": "wamid.TXT"}]})
+
+    monkeypatch.setattr("mensajes_enriquecidos.requests.post", post_falso)
+
+    ok, wamid = enviar_texto_con_wamid("573001112233", "Su pedido #7 va en camino.")
+
+    assert ok is True
+    assert wamid == "wamid.TXT"
+
+
+def test_enviar_texto_con_wamid_devuelve_false_y_ningun_wamid_ante_un_error(monkeypatch):
+    _configurar_env(monkeypatch)
+    monkeypatch.setattr("red_meta.time.sleep", lambda segundos: None)
+
+    def post_falso(*args, **kwargs):
+        raise requests.exceptions.ConnectionError("sin red")
+
+    monkeypatch.setattr("mensajes_enriquecidos.requests.post", post_falso)
+
+    assert enviar_texto_con_wamid("573001112233", "x") == (False, None)

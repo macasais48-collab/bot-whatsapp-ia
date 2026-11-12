@@ -112,6 +112,22 @@ def enviar_imagen_con_wamid(numero: str, media_id: str, caption: str | None = No
     return _enviar_con_wamid(_cuerpo_imagen(numero, media_id, caption))
 
 
+def enviar_texto_con_wamid(numero: str, texto: str) -> tuple[bool, str | None]:
+    # Mismo cuerpo que whatsapp.enviar_texto (que no cambia), pero devuelve
+    # también el wamid — solo para los avisos de estado del pedido al cliente
+    # (estado_pedido.avanzar_estado): un fallo por ventana de 24 horas (131047)
+    # llega después, en un status "failed", y el wamid permite asociarlo al
+    # pedido y registrarlo como informativo, no como "desconocido".
+    cuerpo = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": numero,
+        "type": "text",
+        "text": {"preview_url": False, "body": texto},
+    }
+    return _enviar_con_wamid(cuerpo)
+
+
 def enviar_cta_url(numero: str, texto_cuerpo: str, texto_boton: str, url: str) -> bool:
     cuerpo = {
         "messaging_product": "whatsapp",

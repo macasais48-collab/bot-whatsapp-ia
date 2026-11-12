@@ -6,6 +6,7 @@ from pathlib import Path
 
 from flask import Flask, Response, request
 
+import estado_pedido
 import pago_pedido
 import perfiles_negocio
 from almacenamiento import HistorialSQLite
@@ -21,6 +22,7 @@ from mensajes_enriquecidos import (
     enviar_imagen_con_wamid,
     enviar_lista,
     enviar_plantilla,
+    enviar_texto_con_wamid,
     enviar_ubicacion,
 )
 from pedidos import Pedidos
@@ -44,8 +46,12 @@ MENSAJE_SOLO_TEXTO = (
     "Escríbeme tu pregunta y con gusto te ayudo."
 )
 MENSAJE_DUENO_RECORDATORIO = (
-    "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar."
+    "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar. "
+    "Escriba *pedidos* para ver los pedidos activos y avanzar su estado."
 )
+# Código de error de Meta cuando un mensaje libre se envía fuera de la ventana
+# de 24 horas del destinatario (re-engagement message).
+CODIGO_ERROR_VENTANA_24H = 131047
 
 MARCADOR_MENSAJE_DERIVACION = "## Mensaje de derivación"
 UMBRAL_MENSAJE_VIEJO_SEGUNDOS = 5 * 60
@@ -111,6 +117,7 @@ def crear_app(
     reenviar_media_fn=reenviar_media_entrante,
     enviar_plantilla_fn=enviar_plantilla,
     enviar_imagen_con_wamid_fn=enviar_imagen_con_wamid,
+    enviar_texto_con_wamid_fn=enviar_texto_con_wamid,
     recursos: dict | None = None,
     pedidos: Pedidos | None = None,
     perfil: str | None = None,
@@ -329,6 +336,17 @@ def crear_app(
             )
             return
 
+        if info is not None and info["tipo"] == "estado_cliente" and codigo == CODIGO_ERROR_VENTANA_24H:
+            # Aviso de estado del pedido al cliente fuera de su ventana de 24
+            # horas: el cambio de estado ya quedó aplicado, así que esto es solo
+            # informativo. Cualquier otro código sigue como advertencia (abajo).
+            logger.info(
+                "El aviso de estado del pedido #%s no se entregó al cliente (codigo=%s, ventana "
+                "de 24 horas cerrada, destino=%s).",
+                info["pedido_id"], codigo, numero_enmascarado,
+            )
+            return
+
         pedido_id = info["pedido_id"] if info is not None else "desconocido"
         logger.warning(
             "Mensaje no entregado (status=failed, codigo=%s, titulo=%s, destino=%s, pedido=%s)",
@@ -353,14 +371,66 @@ def crear_app(
             return mensaje.get("button", {}).get("payload")
         return None
 
+    def _enviar_lista_pedidos_activos(numero_pagina: int) -> None:
+        secciones = estado_pedido.pagina_de_pedidos_activos(pedidos, numero_pagina)
+        if secciones is None:
+            enviar_texto_fn(numero_dueno, estado_pedido.MENSAJE_SIN_PEDIDOS_ACTIVOS)
+            return
+        enviar_lista_fn(
+            numero_dueno,
+            estado_pedido.LISTA_TEXTO_CUERPO,
+            estado_pedido.LISTA_TEXTO_BOTON,
+            secciones,
+        )
+
+    def _enviar_detalle_pedido(pedido_id: int) -> None:
+        pedido = pedidos.obtener(pedido_id)
+        if pedido is None or pedido.get("estado_entrega") is None:
+            enviar_texto_fn(numero_dueno, f"El pedido #{pedido_id} no está entre los pedidos activos.")
+            return
+        texto, botones = estado_pedido.detalle_para_dueno(pedido, recursos.get("domicilio", {}))
+        if not botones:
+            enviar_texto_fn(numero_dueno, f"{texto}\nEste pedido ya no tiene pasos pendientes.")
+            return
+        # Un solo botón: el único paso siguiente válido para ESTE pedido.
+        enviar_botones_fn(numero_dueno, texto, botones)
+
     def _procesar_respuesta_dueno(mensaje: dict) -> None:
         # Mensajes del dueño NUNCA llegan a cerebro.responder ni a flujo_pedido:
-        # solo se reconocen los botones de pago [Pago recibido]/[No ha llegado];
+        # solo se reconocen los botones de pago [Pago recibido]/[No ha llegado],
+        # la palabra "pedidos" con su lista y el botón de siguiente estado;
         # cualquier otra cosa (un "hola" para abrir la ventana de 24 horas, un
         # botón desconocido) recibe un texto fijo recordándole qué es este número.
         ahora = reloj()
+
+        if mensaje.get("type") == "text" and estado_pedido.es_palabra_clave_pedidos(
+            mensaje.get("text", {}).get("body")
+        ):
+            _enviar_lista_pedidos_activos(1)
+            return
+
+        interactivo = mensaje.get("interactive", {}) if mensaje.get("type") == "interactive" else {}
+        if interactivo.get("type") == "list_reply":
+            fila = estado_pedido.interpretar_fila(interactivo.get("list_reply", {}).get("id") or "")
+            if fila is not None:
+                tipo_fila, valor = fila
+                if tipo_fila == "ver":
+                    _enviar_detalle_pedido(valor)
+                else:
+                    _enviar_lista_pedidos_activos(valor)
+                return
+
         id_boton = _id_boton_entrante(mensaje)
         if id_boton is not None:
+            avance = estado_pedido.interpretar_boton_avanzar(id_boton)
+            if avance is not None:
+                pedido_id, estado_nuevo = avance
+                resultado = estado_pedido.avanzar_estado(
+                    pedidos, pedido_id, estado_nuevo, ahora, enviar_texto_con_wamid_fn
+                )
+                enviar_texto_fn(numero_dueno, resultado)
+                return
+
             if id_boton.startswith(pago_pedido.PREFIJO_BOTON_PAGO_RECIBIDO):
                 pedido_id = _id_pedido_desde_boton(id_boton, pago_pedido.PREFIJO_BOTON_PAGO_RECIBIDO)
                 if pedido_id is not None:

@@ -17,6 +17,7 @@ COPY --chown=appuser:appuser \
     basedatos.py \
     cerebro.py \
     env.py \
+    estado_pedido.py \
     flujo_pedido.py \
     gestionar_pedido.py \
     gunicorn.conf.py \

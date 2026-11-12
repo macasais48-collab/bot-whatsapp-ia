@@ -13,6 +13,15 @@ ESTADO_PAGO_POR_VERIFICAR = "pago_por_verificar"
 ESTADO_PAGADO = "pagado"
 
 ESTADOS_ACTIVOS = (ESTADO_EN_CONSTRUCCION, ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_POR_VERIFICAR)
+# Estados de pago en los que el pedido ya quedó confirmado (efectivo o QR pagado).
+ESTADOS_CONFIRMADOS = (ESTADO_RECIBIDO, ESTADO_PAGADO)
+
+# Estado de ENTREGA (sub-fase 5b): columna aparte de `estado`, que sigue
+# gobernando construcción/pago/verificación sin ningún cambio.
+ENTREGA_EN_PREPARACION = "en_preparacion"
+ENTREGA_EN_CAMINO = "en_camino"
+ENTREGA_LISTO_PARA_RECOGER = "listo_para_recoger"
+ENTREGA_ENTREGADO = "entregado"
 
 PASO_INICIAL = "producto"
 
@@ -43,6 +52,7 @@ class Pedidos:
                     longitud REAL,
                     total INTEGER,
                     metodo_pago TEXT,
+                    estado_entrega TEXT,
                     creado_en REAL NOT NULL,
                     actualizado_en REAL NOT NULL
                 )
@@ -70,6 +80,20 @@ class Pedidos:
             }
             if "metodo_pago" not in columnas_existentes:
                 conexion.execute("ALTER TABLE pedidos ADD COLUMN metodo_pago TEXT")
+            # Misma migración defensiva para el estado de entrega (sub-fase 5b).
+            # Los pedidos que ya estaban confirmados antes de esta migración no
+            # tienen forma de saber su estado real de entrega: se marcan como
+            # entregados (decisión aprobada en el plan), para que no aparezcan
+            # como "activos" reclamando una acción que ya pasó. Solo corre una
+            # vez: cuando la columna se acaba de agregar. Los pedidos todavía en
+            # pago quedan sin estado de entrega y lo reciben al confirmarse.
+            if "estado_entrega" not in columnas_existentes:
+                conexion.execute("ALTER TABLE pedidos ADD COLUMN estado_entrega TEXT")
+                marcadores = ", ".join("?" for _ in ESTADOS_CONFIRMADOS)
+                conexion.execute(
+                    f"UPDATE pedidos SET estado_entrega = ? WHERE estado IN ({marcadores})",
+                    (ENTREGA_ENTREGADO, *ESTADOS_CONFIRMADOS),
+                )
 
             conexion.execute(
                 """
@@ -100,6 +124,7 @@ class Pedidos:
             longitud,
             total,
             metodo_pago,
+            estado_entrega,
             creado_en,
             actualizado_en,
         ) = fila
@@ -128,6 +153,7 @@ class Pedidos:
             "longitud": longitud,
             "total": total,
             "metodo_pago": metodo_pago,
+            "estado_entrega": estado_entrega,
             "creado_en": creado_en,
             "actualizado_en": actualizado_en,
             "items": [
@@ -145,7 +171,7 @@ class Pedidos:
     _COLUMNAS_PEDIDO = (
         "id, numero_cliente, perfil, estado, paso, producto_pendiente, "
         "consentimiento_aceptado, tipo_entrega, zona_domicilio, direccion_texto, "
-        "latitud, longitud, total, metodo_pago, creado_en, actualizado_en"
+        "latitud, longitud, total, metodo_pago, estado_entrega, creado_en, actualizado_en"
     )
 
     def obtener_en_construccion(self, numero_cliente: str) -> dict | None:
@@ -360,8 +386,8 @@ class Pedidos:
             self._ruta_bd,
             lambda conexion: conexion.execute(
                 "UPDATE pedidos SET estado = ?, total = ?, metodo_pago = 'efectivo', "
-                "actualizado_en = ? WHERE id = ?",
-                (ESTADO_RECIBIDO, total, ahora, pedido_id),
+                "estado_entrega = ?, actualizado_en = ? WHERE id = ?",
+                (ESTADO_RECIBIDO, total, ENTREGA_EN_PREPARACION, ahora, pedido_id),
             ),
         )
 
@@ -388,10 +414,49 @@ class Pedidos:
         ejecutar(
             self._ruta_bd,
             lambda conexion: conexion.execute(
-                "UPDATE pedidos SET estado = ?, actualizado_en = ? WHERE id = ?",
-                (ESTADO_PAGADO, ahora, pedido_id),
+                "UPDATE pedidos SET estado = ?, estado_entrega = ?, actualizado_en = ? WHERE id = ?",
+                (ESTADO_PAGADO, ENTREGA_EN_PREPARACION, ahora, pedido_id),
             ),
         )
+
+    def avanzar_estado_entrega(
+        self, pedido_id: int, estado_esperado: str, estado_nuevo: str, ahora: float
+    ) -> bool:
+        # La idempotencia vive en el propio UPDATE: solo cambia si el pedido
+        # sigue exactamente en el estado esperado. Una segunda pulsación del
+        # mismo botón (o dos personas a la vez) no actualiza ninguna fila y
+        # devuelve False, sin duplicar el aviso al cliente.
+        filas_afectadas = ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "UPDATE pedidos SET estado_entrega = ?, actualizado_en = ? "
+                "WHERE id = ? AND estado_entrega = ?",
+                (estado_nuevo, ahora, pedido_id, estado_esperado),
+            ).rowcount,
+        )
+        return filas_afectadas == 1
+
+    def listar_activos_entrega(self, desplazamiento: int = 0, limite: int | None = None) -> list[dict]:
+        # Pedidos confirmados que todavía no se han entregado, del más antiguo
+        # al más reciente (el más viejo es el que más urge atender).
+        marcadores = ", ".join("?" for _ in ESTADOS_CONFIRMADOS)
+        limite_sql = -1 if limite is None else limite
+        filas = ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                f"""
+                SELECT {self._COLUMNAS_PEDIDO}
+                FROM pedidos
+                WHERE estado IN ({marcadores})
+                  AND estado_entrega IS NOT NULL
+                  AND estado_entrega != ?
+                ORDER BY id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (*ESTADOS_CONFIRMADOS, ENTREGA_ENTREGADO, limite_sql, desplazamiento),
+            ).fetchall(),
+        )
+        return [self._fila_a_dict(fila) for fila in filas]
 
     def volver_a_pago_pendiente(self, pedido_id: int, ahora: float) -> None:
         ejecutar(

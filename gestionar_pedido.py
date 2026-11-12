@@ -1,9 +1,10 @@
 import sys
 import time
 
+import estado_pedido
 import perfiles_negocio
 from env import obtener_env
-from mensajes_enriquecidos import enviar_plantilla
+from mensajes_enriquecidos import enviar_plantilla, enviar_texto_con_wamid
 from pago_pedido import confirmar_pago, rechazar_pago
 from pedidos import ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_POR_VERIFICAR, Pedidos
 from recursos import cargar_recursos
@@ -42,6 +43,38 @@ def listar(pedidos: Pedidos) -> None:
             print("  (ninguno)")
         for pedido in filas:
             print(f"  {_describir(pedido)}")
+
+
+def listar_estados(pedidos: Pedidos) -> None:
+    # Mismo listado que el dueño ve con "pedidos" por WhatsApp, completo (sin
+    # paginación) y con el teléfono siempre enmascarado.
+    print("Pedidos activos de entrega (del más antiguo al más reciente):")
+    activos = pedidos.listar_activos_entrega()
+    if not activos:
+        print("  (ninguno)")
+    for pedido in activos:
+        entrega = "domicilio" if pedido["tipo_entrega"] == "domicilio" else "recoger"
+        estado = estado_pedido.ETIQUETA_ESTADO.get(pedido["estado_entrega"], pedido["estado_entrega"])
+        print(f"  {_describir(pedido)} — {entrega} — {estado}")
+
+
+def avanzar_estado(pedidos: Pedidos, pedido_id: int) -> int:
+    pedido = pedidos.obtener(pedido_id)
+    if pedido is None:
+        print(f"No existe un pedido con el número {pedido_id}.")
+        return 1
+    estado_nuevo = estado_pedido.siguiente_estado(pedido)
+    if estado_nuevo is None:
+        print(f"El pedido #{pedido_id} no tiene un siguiente paso de entrega (estado de entrega: "
+              f'{pedido["estado_entrega"] or "sin confirmar"}).')
+        return 1
+
+    accion = f"marcar como {estado_pedido.ETIQUETA_ESTADO[estado_nuevo].lower()}"
+    if not _confirmar_con_el_usuario(pedido, accion):
+        print("Cancelado, no se hizo ningún cambio.")
+        return 0
+    print(estado_pedido.avanzar_estado(pedidos, pedido_id, estado_nuevo, time.time(), enviar_texto_con_wamid))
+    return 0
 
 
 def _confirmar_con_el_usuario(pedido: dict, accion: str) -> bool:
@@ -90,7 +123,22 @@ def main(argv: list[str] | None = None) -> int:
             print(rechazar_pago(pedidos, pedido_id, ahora, enviar_texto))
         return 0
 
-    print("Uso: gestionar_pedido.py [listar | confirmar <id> | no-llego <id>]")
+    if argv[0] == "estado" and argv[1:] == ["listar"]:
+        listar_estados(pedidos)
+        return 0
+
+    if argv[0] == "estado" and len(argv) == 3 and argv[1] == "avanzar":
+        try:
+            pedido_id = int(argv[2])
+        except ValueError:
+            print(f"'{argv[2]}' no es un número de pedido válido.")
+            return 1
+        return avanzar_estado(pedidos, pedido_id)
+
+    print(
+        "Uso: gestionar_pedido.py [listar | confirmar <id> | no-llego <id> | "
+        "estado listar | estado avanzar <id>]"
+    )
     return 1
 
 

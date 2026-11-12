@@ -15,6 +15,7 @@ from recursos import LIMITE_CUERPO_INTERACTIVO, cargar_recursos
 from webhook import (
     BOTONES_TEXTO_CUERPO_POR_DEFECTO,
     MENSAJE_DERIVACION_POR_DEFECTO,
+    MENSAJE_DUENO_RECORDATORIO,
     MENSAJE_SOLO_TEXTO,
     MENU_TEXTO_BOTON,
     MENU_TEXTO_CUERPO,
@@ -92,6 +93,15 @@ class EnviosListaFalsos:
     def __call__(self, numero, texto_cuerpo, texto_boton, secciones):
         self.llamadas.append((numero, texto_cuerpo, texto_boton, secciones))
         return True
+
+
+class EnviosConWamidFalsos:
+    def __init__(self):
+        self.llamadas = []
+
+    def __call__(self, numero, texto):
+        self.llamadas.append((numero, texto))
+        return True, f"wamid.estado-{len(self.llamadas)}"
 
 
 class ObtencionMediaIdFalsa:
@@ -256,6 +266,11 @@ def obtencion_media_id():
 
 
 @pytest.fixture
+def envios_con_wamid():
+    return EnviosConWamidFalsos()
+
+
+@pytest.fixture
 def fabrica_cliente(
     tmp_path,
     monkeypatch,
@@ -266,6 +281,7 @@ def fabrica_cliente(
     envios_botones,
     envios_lista,
     obtencion_media_id,
+    envios_con_wamid,
 ):
     monkeypatch.setenv("META_APP_SECRET", APP_SECRET)
     monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", VERIFY_TOKEN)
@@ -303,6 +319,7 @@ def fabrica_cliente(
             obtener_media_id_fn=obtener_media_id_fn or obtencion_media_id,
             reenviar_media_fn=reenviar_media_fn or (lambda media_id_entrante: "media-reenviado-de-prueba"),
             enviar_plantilla_fn=enviar_plantilla_fn or (lambda *a, **k: (True, "wamid-prueba")),
+            enviar_texto_con_wamid_fn=envios_con_wamid,
             recursos=recursos,
             pedidos=pedidos or Pedidos(tmp_path / f"pedidos_{contador['n']}.db"),
             numero_dueno=numero_dueno,
@@ -1235,9 +1252,8 @@ def test_mensaje_de_texto_del_dueno_recibe_el_recordatorio_fijo_y_nunca_llega_a_
 
     assert respuesta.status_code == 200
     assert cerebro_que_falla.llamadas == 0
-    assert envios_texto.llamadas == [
-        (NUMERO_DUENO_DE_PRUEBA, "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar.")
-    ]
+    assert envios_texto.llamadas == [(NUMERO_DUENO_DE_PRUEBA, MENSAJE_DUENO_RECORDATORIO)]
+    assert "*pedidos*" in MENSAJE_DUENO_RECORDATORIO
     assert pedidos.obtener_activo(NUMERO_DUENO_DE_PRUEBA) is None
 
 
@@ -1247,9 +1263,7 @@ def test_boton_desconocido_del_dueno_recibe_el_recordatorio_fijo(fabrica_cliente
 
     _post_con_firma(cliente, _payload_mensaje_boton("wamid.1", NUMERO_DUENO_DE_PRUEBA, "algun_otro_boton"))
 
-    assert envios.llamadas == [
-        (NUMERO_DUENO_DE_PRUEBA, "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar.")
-    ]
+    assert envios.llamadas == [(NUMERO_DUENO_DE_PRUEBA, MENSAJE_DUENO_RECORDATORIO)]
 
 
 def test_boton_de_plantilla_del_dueno_confirma_el_pago_igual_que_el_interactivo(
@@ -1411,3 +1425,172 @@ def test_una_peticion_normal_deja_una_sola_linea_de_log(fabrica_cliente, caplog)
 
     lineas_de_peticion = [r for r in caplog.records if "/webhook" in r.getMessage()]
     assert len(lineas_de_peticion) == 1
+
+
+# -- Sub-fase 5b: estados del pedido (flujo del dueño) --
+
+
+def _pedido_confirmado_webhook(pedidos, numero="573001112233", tipo_entrega="domicilio"):
+    pedido_id = pedidos.crear_en_construccion(numero, "tamales", ahora=RELOJ_PRUEBA_SEGUNDOS)
+    pedidos.agregar_item(pedido_id, "producto_a", "Producto A", 5000, 2, ahora=RELOJ_PRUEBA_SEGUNDOS)
+    if tipo_entrega == "domicilio":
+        pedidos.fijar_entrega(
+            pedido_id, "domicilio", ahora=RELOJ_PRUEBA_SEGUNDOS, paso_siguiente="confirmacion",
+            zona_domicilio="centro",
+        )
+    else:
+        pedidos.fijar_entrega(pedido_id, "recoger", ahora=RELOJ_PRUEBA_SEGUNDOS, paso_siguiente="confirmacion")
+    pedidos.confirmar_efectivo(pedido_id, total=10000, ahora=RELOJ_PRUEBA_SEGUNDOS)
+    return pedido_id
+
+
+def test_palabra_pedidos_del_dueno_responde_con_la_lista_de_pedidos_activos(
+    fabrica_cliente, envios, envios_lista, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    primero = _pedido_confirmado_webhook(pedidos, "573000000001")
+    segundo = _pedido_confirmado_webhook(pedidos, "573000000002", tipo_entrega="recoger")
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.1", NUMERO_DUENO_DE_PRUEBA, "Pedidos"))
+
+    assert envios.llamadas == []
+    assert len(envios_lista.llamadas) == 1
+    numero, _, _, secciones = envios_lista.llamadas[0]
+    assert numero == NUMERO_DUENO_DE_PRUEBA
+    assert [f["id"] for f in secciones[0]["filas"]] == [f"ver_pedido_{primero}", f"ver_pedido_{segundo}"]
+    assert "573000000001" not in repr(secciones)
+
+
+def test_palabra_pedidos_sin_pedidos_activos_responde_con_un_texto(fabrica_cliente, envios, envios_lista, tmp_path):
+    cliente = fabrica_cliente(pedidos=Pedidos(tmp_path / "pedidos.db"), numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.1", NUMERO_DUENO_DE_PRUEBA, "pedidos"))
+
+    assert envios_lista.llamadas == []
+    assert envios.llamadas == [(NUMERO_DUENO_DE_PRUEBA, "No hay pedidos activos en este momento.")]
+
+
+def test_palabra_pedidos_desde_otro_numero_nunca_muestra_la_lista(fabrica_cliente, envios_lista, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    _pedido_confirmado_webhook(pedidos)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.1", "573009998877", "pedidos"))
+
+    assert envios_lista.llamadas == []
+
+
+def test_con_mas_de_10_pedidos_ver_mas_trae_la_pagina_siguiente(fabrica_cliente, envios_lista, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    ids = [_pedido_confirmado_webhook(pedidos, f"57300000{i:04d}") for i in range(11)]
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.1", NUMERO_DUENO_DE_PRUEBA, "pedidos"))
+    filas_1 = envios_lista.llamadas[0][3][0]["filas"]
+    assert filas_1[-1]["id"] == "pedidos_pagina_2"
+
+    _post_con_firma(cliente, _payload_mensaje_lista("wamid.2", NUMERO_DUENO_DE_PRUEBA, "pedidos_pagina_2"))
+
+    filas_2 = envios_lista.llamadas[1][3][0]["filas"]
+    assert [f["id"] for f in filas_2] == [f"ver_pedido_{i}" for i in ids[9:]]
+
+
+def test_tocar_un_pedido_de_la_lista_envia_un_solo_boton_con_el_siguiente_paso(
+    fabrica_cliente, envios_botones, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedido_id = _pedido_confirmado_webhook(pedidos, tipo_entrega="recoger")
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_lista("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"ver_pedido_{pedido_id}"))
+
+    assert len(envios_botones.llamadas) == 1
+    numero, texto, botones = envios_botones.llamadas[0]
+    assert numero == NUMERO_DUENO_DE_PRUEBA
+    assert f"Pedido #{pedido_id}" in texto
+    assert botones == [{"id": f"avanzar_{pedido_id}_listo_para_recoger", "titulo": "Listo para recoger"}]
+
+
+def test_boton_avanzar_del_dueno_cambia_el_estado_y_avisa_al_cliente(
+    fabrica_cliente, envios, envios_con_wamid, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    pedido_id = _pedido_confirmado_webhook(pedidos, numero_cliente)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(
+        cliente, _payload_mensaje_boton("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"avanzar_{pedido_id}_en_camino")
+    )
+
+    assert pedidos.obtener(pedido_id)["estado_entrega"] == "en_camino"
+    assert envios_con_wamid.llamadas == [(numero_cliente, f"Su pedido #{pedido_id} va en camino.")]
+    assert envios.llamadas == [(NUMERO_DUENO_DE_PRUEBA, f"Pedido #{pedido_id}: En camino. Se avisó al cliente.")]
+    assert pedidos.info_aviso_dueno_por_wamid("wamid.estado-1") == {"pedido_id": pedido_id, "tipo": "estado_cliente"}
+
+
+def test_boton_avanzar_desde_otro_numero_no_cambia_nada(fabrica_cliente, envios_con_wamid, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedido_id = _pedido_confirmado_webhook(pedidos)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.1", "573009998877", f"avanzar_{pedido_id}_en_camino"))
+
+    assert pedidos.obtener(pedido_id)["estado_entrega"] == "en_preparacion"
+    assert envios_con_wamid.llamadas == []
+
+
+def test_doble_pulsacion_del_boton_avanzar_no_repite_el_aviso_al_cliente(
+    fabrica_cliente, envios, envios_con_wamid, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedido_id = _pedido_confirmado_webhook(pedidos)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+    id_boton = f"avanzar_{pedido_id}_en_camino"
+
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.1", NUMERO_DUENO_DE_PRUEBA, id_boton))
+    _post_con_firma(cliente, _payload_mensaje_boton("wamid.2", NUMERO_DUENO_DE_PRUEBA, id_boton))
+
+    assert len(envios_con_wamid.llamadas) == 1
+    assert "No se hizo ningún cambio" in envios.llamadas[-1][1]
+
+
+def test_status_failed_131047_de_aviso_de_estado_es_informativo_con_el_pedido(fabrica_cliente, caplog, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedido_id = _pedido_confirmado_webhook(pedidos)
+    pedidos.registrar_wamid_aviso_dueno("wamid.estado", pedido_id, "estado_cliente", ahora=1000.0)
+    cliente = fabrica_cliente(pedidos=pedidos)
+    caplog.set_level(logging.INFO, logger="webhook")
+    payload = _payload_estado(
+        "wamid.estado", "573001112233", status="failed",
+        errors=[{"code": 131047, "title": "Re-engagement message"}],
+    )
+
+    _post_con_firma(cliente, payload)
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    informativos = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.INFO)
+    assert f"#{pedido_id}" in informativos
+    assert "131047" in informativos
+    assert "573001112233" not in informativos
+
+
+def test_status_failed_de_aviso_de_estado_con_otro_codigo_sigue_siendo_advertencia(
+    fabrica_cliente, caplog, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedido_id = _pedido_confirmado_webhook(pedidos)
+    pedidos.registrar_wamid_aviso_dueno("wamid.estado", pedido_id, "estado_cliente", ahora=1000.0)
+    cliente = fabrica_cliente(pedidos=pedidos)
+    caplog.set_level(logging.WARNING, logger="webhook")
+    payload = _payload_estado(
+        "wamid.estado", "573001112233", status="failed",
+        errors=[{"code": 131026, "title": "Message undeliverable"}],
+    )
+
+    _post_con_firma(cliente, payload)
+
+    advertencias = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+    assert "131026" in advertencias
+    assert f"pedido={pedido_id}" in advertencias

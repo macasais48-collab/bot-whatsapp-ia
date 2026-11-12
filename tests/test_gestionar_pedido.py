@@ -142,6 +142,100 @@ def test_confirmar_dispara_el_aviso_de_pedido_nuevo_resolviendo_domicilio_del_pe
     assert botones is None
 
 
+# -- Sub-fase 5b: estado listar / estado avanzar --
+
+
+def _preparar_estado(monkeypatch, tmp_path, respuestas_input=None):
+    envios = _preparar(monkeypatch, tmp_path, respuestas_input=respuestas_input)
+    envios_con_wamid = []
+    monkeypatch.setattr(
+        "gestionar_pedido.enviar_texto_con_wamid",
+        lambda numero, texto: envios_con_wamid.append((numero, texto)) or (True, "wamid-estado"),
+    )
+    return envios, envios_con_wamid
+
+
+def _pedido_confirmado(tmp_path, tipo_entrega="domicilio", numero="573001112233"):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedido_id = pedidos.crear_en_construccion(numero, "tamales", ahora=1000.0)
+    pedidos.agregar_item(pedido_id, "producto_a", "Producto A", 5000, 2, ahora=1000.0)
+    if tipo_entrega == "domicilio":
+        pedidos.fijar_entrega(
+            pedido_id, "domicilio", ahora=1000.0, paso_siguiente="confirmacion", zona_domicilio="centro"
+        )
+    else:
+        pedidos.fijar_entrega(pedido_id, "recoger", ahora=1000.0, paso_siguiente="confirmacion")
+    pedidos.confirmar_efectivo(pedido_id, total=10000, ahora=1000.0)
+    return pedidos, pedido_id
+
+
+def test_estado_listar_sin_pedidos_activos_dice_ninguno(tmp_path, monkeypatch, capsys):
+    _preparar_estado(monkeypatch, tmp_path)
+    Pedidos(tmp_path / "pedidos.db")
+
+    codigo = gestionar_pedido.main(["estado", "listar"])
+
+    assert codigo == 0
+    assert "(ninguno)" in capsys.readouterr().out
+
+
+def test_estado_listar_muestra_estado_y_enmascara_el_telefono(tmp_path, monkeypatch, capsys):
+    _preparar_estado(monkeypatch, tmp_path)
+    _, pedido_id = _pedido_confirmado(tmp_path)
+
+    gestionar_pedido.main(["estado", "listar"])
+
+    salida = capsys.readouterr().out
+    assert f"#{pedido_id}" in salida
+    assert "En preparación" in salida
+    assert "domicilio" in salida
+    assert "573001112233" not in salida
+
+
+def test_estado_avanzar_con_si_aplica_el_siguiente_paso_y_avisa_al_cliente(tmp_path, monkeypatch, capsys):
+    _, envios_con_wamid = _preparar_estado(monkeypatch, tmp_path, respuestas_input=["si"])
+    pedidos, pedido_id = _pedido_confirmado(tmp_path, tipo_entrega="recoger")
+
+    codigo = gestionar_pedido.main(["estado", "avanzar", str(pedido_id)])
+
+    assert codigo == 0
+    assert pedidos.obtener(pedido_id)["estado_entrega"] == "listo_para_recoger"
+    assert envios_con_wamid == [("573001112233", f"Su pedido #{pedido_id} está listo para recoger.")]
+    assert pedidos.info_aviso_dueno_por_wamid("wamid-estado")["tipo"] == "estado_cliente"
+    assert "573001112233" not in capsys.readouterr().out
+
+
+def test_estado_avanzar_con_no_no_cambia_nada(tmp_path, monkeypatch):
+    _, envios_con_wamid = _preparar_estado(monkeypatch, tmp_path, respuestas_input=["no"])
+    pedidos, pedido_id = _pedido_confirmado(tmp_path)
+
+    codigo = gestionar_pedido.main(["estado", "avanzar", str(pedido_id)])
+
+    assert codigo == 0
+    assert pedidos.obtener(pedido_id)["estado_entrega"] == "en_preparacion"
+    assert envios_con_wamid == []
+
+
+def test_estado_avanzar_sobre_pedido_sin_confirmar_o_inexistente_no_hace_nada(tmp_path, monkeypatch):
+    _, envios_con_wamid = _preparar_estado(monkeypatch, tmp_path, respuestas_input=["si"])
+    pedidos, en_verificacion = _pedido_en_verificacion(tmp_path)
+
+    assert gestionar_pedido.main(["estado", "avanzar", str(en_verificacion)]) == 1
+    assert gestionar_pedido.main(["estado", "avanzar", "999"]) == 1
+    assert gestionar_pedido.main(["estado", "avanzar", "abc"]) == 1
+    assert envios_con_wamid == []
+
+
+def test_estado_con_argumentos_invalidos_muestra_el_uso(tmp_path, monkeypatch, capsys):
+    _preparar_estado(monkeypatch, tmp_path)
+    Pedidos(tmp_path / "pedidos.db")
+
+    codigo = gestionar_pedido.main(["estado"])
+
+    assert codigo == 1
+    assert "estado avanzar <id>" in capsys.readouterr().out
+
+
 def test_gestionar_pedido_nunca_importa_webhook():
     ruta = Path(gestionar_pedido.__file__)
     contenido = ruta.read_text(encoding="utf-8")
