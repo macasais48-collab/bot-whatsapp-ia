@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import gestionar_pedido
 from pedidos import Pedidos
 
@@ -97,3 +99,52 @@ def test_confirmar_sobre_pedido_en_otro_estado_no_hace_nada(tmp_path, monkeypatc
 
     assert pedidos.obtener(pedido_id)["estado"] == "en_construccion"
     assert envios == []
+
+
+def test_confirmar_dispara_el_aviso_de_pedido_nuevo_resolviendo_domicilio_del_perfil(
+    tmp_path, monkeypatch
+):
+    envios = _preparar(monkeypatch, tmp_path, respuestas_input=["si"])
+    monkeypatch.setenv("NUMERO_DUENO", "573005554433")
+    monkeypatch.setenv("PLANTILLA_AVISO_PEDIDO_NUEVO_NOMBRE", "aviso_pedido_nuevo")
+    monkeypatch.setenv("PLANTILLA_AVISO_PEDIDO_NUEVO_IDIOMA", "es")
+    llamadas_plantilla = []
+    monkeypatch.setattr(
+        "gestionar_pedido.enviar_plantilla",
+        lambda numero, nombre, idioma, parametros, botones=None: (
+            llamadas_plantilla.append((numero, nombre, idioma, parametros, botones)) or (True, "wamid-prueba")
+        ),
+    )
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    pedido_id = pedidos.crear_en_construccion(numero_cliente, "tamales", ahora=1000.0)
+    pedidos.agregar_item(pedido_id, "tamal_sencillo", "Tamal sencillo", 8000, 2, ahora=1000.0)
+    pedidos.fijar_entrega(
+        pedido_id, "domicilio", ahora=1000.0, paso_siguiente="confirmacion",
+        zona_domicilio="centro", direccion_texto="Calle de prueba 1-23",
+    )
+    pedidos.marcar_pago_pendiente(pedido_id, total=19000, ahora=1001.0)
+    pedidos.marcar_pago_por_verificar(pedido_id, ahora=1002.0)
+
+    codigo = gestionar_pedido.main(["confirmar", str(pedido_id)])
+
+    assert codigo == 0
+    assert pedidos.obtener(pedido_id)["estado"] == "pagado"
+    assert len(llamadas_plantilla) == 1
+    numero, nombre, idioma, parametros, botones = llamadas_plantilla[0]
+    assert numero == "573005554433"
+    assert nombre == "aviso_pedido_nuevo"
+    assert idioma == "es"
+    assert parametros[0] == str(pedido_id)
+    assert "Centro" in parametros[3]  # domicilio resuelto desde el perfil del pedido ("tamales")
+    assert "Calle de prueba 1-23" in parametros[3]
+    assert parametros[5] == numero_cliente  # teléfono completo del cliente en el contenido
+    assert botones is None
+
+
+def test_gestionar_pedido_nunca_importa_webhook():
+    ruta = Path(gestionar_pedido.__file__)
+    contenido = ruta.read_text(encoding="utf-8")
+
+    assert "import webhook" not in contenido
+    assert "webhook" not in gestionar_pedido.__dict__

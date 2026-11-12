@@ -141,6 +141,8 @@ Cuando el cliente envía la foto del comprobante, el pedido pasa a verificación
 
 **Statuses del webhook**: el bot ahora lee las notificaciones de estado que manda Meta (`sent`/`delivered`/`read`/`failed`) — las tres primeras nunca generan ningún log; un `failed` se registra con el código y el título del error de Meta, el teléfono enmascarado, y el número de pedido si el mensaje que falló era un aviso al dueño (asociado por el id de mensaje, `wamid`, en una tabla mínima sin contenido ni datos personales). Si el que falla es el envío aparte del comprobante (mejor esfuerzo), el log es informativo, no una advertencia, y nunca aparece como "pedido desconocido".
 
+**Aviso de pedido nuevo al negocio**: cada vez que un pedido queda confirmado —en efectivo, incluido desde el botón `[Pagar en efectivo]` en pago pendiente, o por QR cuando el dueño o `gestionar_pedido.py` confirman el pago— y `NUMERO_DUENO` está configurada, el bot avisa al dueño con el número de pedido, los productos, el total, la forma de entrega (zona y dirección), el método de pago y el **teléfono completo del cliente**. Esta es una excepción deliberada, solo para que el negocio pueda contactarlo y coordinar la entrega: en los logs el teléfono siempre sigue enmascarado, sin ninguna excepción. Si además están configuradas `PLANTILLA_AVISO_PEDIDO_NUEVO_NOMBRE` y `PLANTILLA_AVISO_PEDIDO_NUEVO_IDIOMA` (otra plantilla de WhatsApp aprobada por Meta, sin botones — ver `docs/plantilla_aviso_pedido_nuevo.md` para la especificación exacta y cómo crearla en el WhatsApp Manager), el aviso se envía **siempre** por esa plantilla, igual de garantizado fuera de la ventana de 24 horas que el aviso de pago. Si cualquiera de las dos variables no está configurada, el bot usa un mensaje de texto libre (puede fallar fuera de la ventana de 24 horas, como cualquier mensaje libre — ese fallo ya queda registrado por la lectura de statuses).
+
 Como respaldo (o si `NUMERO_DUENO` no está configurada), `gestionar_pedido.py` permite listar los pedidos en espera y confirmar o rechazar un pago desde la línea de comandos dentro del contenedor:
 
 ```bash
@@ -197,8 +199,10 @@ BotWhatsApp/
 ├── media_cache.py                 # Sube imágenes a Meta y cachea su media id (vence a los 25 días)
 ├── red_meta.py                     # Reintentos compartidos ante 429/error de conexión con la Graph API
 ├── pedidos.py                     # Persistencia de pedidos en SQLite (tablas pedidos y pedido_items)
+├── pedido_resumen.py               # Resumen del pedido: versión multilínea y versiones de una línea para plantillas
+├── perfiles_negocio.py             # Resolución de perfil/recursos activos (sin Flask; usado por webhook.py y gestionar_pedido.py)
 ├── flujo_pedido.py                # Máquina de estados de la toma de pedidos y el pago (sin IA, sin Flask)
-├── pago_pedido.py                 # Confirmar/rechazar un pago en verificación (compartido webhook/script)
+├── pago_pedido.py                 # Confirmar/rechazar un pago y avisar al dueño de un pedido nuevo (compartido webhook/script)
 ├── gestionar_pedido.py             # CLI de respaldo: listar y confirmar pagos dentro del contenedor
 ├── telefono.py                    # Enmascarado/normalización de número de teléfono
 ├── gunicorn.conf.py                # Logging de gunicorn (stdout; accesslog propio desactivado)
@@ -207,6 +211,7 @@ BotWhatsApp/
 ├── suscribir_app_a_waba.py        # Suscribe esta app a la cuenta de WhatsApp
 ├── docs/capturas/                 # Capturas de pantalla de este README
 ├── docs/plantilla_aviso_dueno.md  # Especificación de la plantilla del aviso al dueño (WhatsApp Manager)
+├── docs/plantilla_aviso_pedido_nuevo.md  # Especificación de la plantilla del aviso de pedido nuevo (WhatsApp Manager)
 ├── tests/                         # Pruebas automáticas (pytest)
 ├── tests/carga/                   # Prueba de carga aparte (no es parte de la suite de pytest)
 └── clientes/<clave>/              # Perfiles de cliente privados (fuera de git y de la imagen; ver "Perfiles de cliente")

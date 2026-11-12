@@ -35,8 +35,7 @@ def test_enviar_plantilla_construye_el_cuerpo_correcto_y_devuelve_el_wamid(monke
         "aviso_pago_pendiente_verificacion",
         "es",
         ["42", "$45.000"],
-        "pago_recibido_42",
-        "pago_no_llego_42",
+        botones=["pago_recibido_42", "pago_no_llego_42"],
     )
 
     assert ok is True
@@ -60,6 +59,25 @@ def test_enviar_plantilla_construye_el_cuerpo_correcto_y_devuelve_el_wamid(monke
     }
 
 
+def test_enviar_plantilla_sin_botones_no_agrega_componentes_de_boton(monkeypatch):
+    _configurar_env(monkeypatch)
+    cuerpos_enviados = []
+
+    def post_falso(url, json, headers, timeout):
+        cuerpos_enviados.append(json)
+        return _RespuestaFalsa({"messages": [{"id": "wamid.DEF456"}]})
+
+    monkeypatch.setattr("mensajes_enriquecidos.requests.post", post_falso)
+
+    ok, wamid = enviar_plantilla("573001112233", "aviso_pedido_nuevo", "es", ["1", "2", "3", "4", "5", "6"])
+
+    assert ok is True
+    assert wamid == "wamid.DEF456"
+    componentes = cuerpos_enviados[0]["template"]["components"]
+    assert len(componentes) == 1
+    assert componentes[0]["type"] == "body"
+
+
 def test_enviar_plantilla_devuelve_false_y_ningun_wamid_ante_un_error(monkeypatch):
     _configurar_env(monkeypatch)
 
@@ -68,7 +86,7 @@ def test_enviar_plantilla_devuelve_false_y_ningun_wamid_ante_un_error(monkeypatc
 
     monkeypatch.setattr("mensajes_enriquecidos.requests.post", post_falso)
 
-    ok, wamid = enviar_plantilla("573001112233", "x", "es", ["1", "2"], "pago_recibido_1", "pago_no_llego_1")
+    ok, wamid = enviar_plantilla("573001112233", "x", "es", ["1", "2"], botones=["pago_recibido_1", "pago_no_llego_1"])
 
     assert ok is False
     assert wamid is None

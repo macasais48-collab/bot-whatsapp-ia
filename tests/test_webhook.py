@@ -10,6 +10,7 @@ from cerebro import Cerebro
 from historial import HistorialMemoria
 from llm.base import ProveedorIA
 from pedidos import Pedidos
+from perfiles_negocio import PERFILES_NEGOCIO
 from recursos import LIMITE_CUERPO_INTERACTIVO, cargar_recursos
 from webhook import (
     BOTONES_TEXTO_CUERPO_POR_DEFECTO,
@@ -17,11 +18,8 @@ from webhook import (
     MENSAJE_SOLO_TEXTO,
     MENU_TEXTO_BOTON,
     MENU_TEXTO_CUERPO,
-    PERFIL_NEGOCIO_POR_DEFECTO,
-    PERFILES_NEGOCIO,
     UMBRAL_MENSAJE_VIEJO_SEGUNDOS,
     _extraer_mensaje_derivacion,
-    _resolver_ruta_negocio,
     crear_app,
 )
 
@@ -283,6 +281,9 @@ def fabrica_cliente(
         cerebro=None,
         numero_dueno=None,
         reenviar_media_fn=None,
+        enviar_plantilla_fn=None,
+        plantilla_aviso_pedido_nuevo_nombre=None,
+        plantilla_aviso_pedido_nuevo_idioma=None,
     ):
         contador["n"] += 1
         historial_dedup = HistorialSQLite(tmp_path / f"prueba_{contador['n']}.db")
@@ -301,9 +302,12 @@ def fabrica_cliente(
             enviar_lista_fn=envios_lista,
             obtener_media_id_fn=obtener_media_id_fn or obtencion_media_id,
             reenviar_media_fn=reenviar_media_fn or (lambda media_id_entrante: "media-reenviado-de-prueba"),
+            enviar_plantilla_fn=enviar_plantilla_fn or (lambda *a, **k: (True, "wamid-prueba")),
             recursos=recursos,
             pedidos=pedidos or Pedidos(tmp_path / f"pedidos_{contador['n']}.db"),
             numero_dueno=numero_dueno,
+            plantilla_aviso_pedido_nuevo_nombre=plantilla_aviso_pedido_nuevo_nombre,
+            plantilla_aviso_pedido_nuevo_idioma=plantilla_aviso_pedido_nuevo_idioma,
             reloj=reloj or (lambda: RELOJ_PRUEBA_SEGUNDOS),
         )
         app.testing = True
@@ -545,29 +549,6 @@ def test_post_con_firma_invalida_registra_diagnostico_sin_exponer_nada(fabrica_c
     mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
     assert "no coincide" in mensajes.lower()
     assert firma_falsa not in mensajes
-
-
-def test_resolver_ruta_negocio_usa_panaderia_si_no_esta_definida(monkeypatch):
-    monkeypatch.delenv("PERFIL_NEGOCIO", raising=False)
-
-    assert _resolver_ruta_negocio() == PERFILES_NEGOCIO[PERFIL_NEGOCIO_POR_DEFECTO]
-
-
-def test_resolver_ruta_negocio_carga_el_perfil_de_camilo(monkeypatch):
-    monkeypatch.setenv("PERFIL_NEGOCIO", "camilo")
-
-    assert _resolver_ruta_negocio() == PERFILES_NEGOCIO["camilo"]
-
-
-def test_resolver_ruta_negocio_falla_con_valor_desconocido(monkeypatch):
-    monkeypatch.setenv("PERFIL_NEGOCIO", "no-existe")
-
-    with pytest.raises(ValueError) as info:
-        _resolver_ruta_negocio()
-
-    assert "PERFIL_NEGOCIO no es válido" in str(info.value)
-    assert "panaderia" in str(info.value)
-    assert "camilo" in str(info.value)
 
 
 def test_extraer_mensaje_derivacion_usa_el_default_si_el_perfil_no_tiene_seccion():
@@ -1323,6 +1304,71 @@ def test_doble_pulsacion_del_boton_de_plantilla_no_repite_el_aviso_al_cliente(
 
     llamadas_al_cliente_tras_la_segunda = [l for l in envios.llamadas if l[0] == numero_cliente]
     assert llamadas_al_cliente_tras_la_segunda == llamadas_al_cliente_tras_la_primera
+
+
+# -- Sub-fase 5a: aviso de pedido nuevo al negocio --
+
+
+def test_boton_de_pago_qr_del_dueno_tambien_dispara_el_aviso_de_pedido_nuevo_por_plantilla(
+    fabrica_cliente, envios, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    id_pedido = _pedido_en_verificacion(pedidos, numero_cliente)
+    llamadas_plantilla = []
+
+    def plantilla_fn(numero, nombre_plantilla, idioma, parametros_cuerpo, botones=None):
+        llamadas_plantilla.append((numero, nombre_plantilla, idioma, parametros_cuerpo, botones))
+        return True, "wamid-pedido-nuevo"
+
+    cliente = fabrica_cliente(
+        pedidos=pedidos,
+        numero_dueno=NUMERO_DUENO_DE_PRUEBA,
+        enviar_plantilla_fn=plantilla_fn,
+        plantilla_aviso_pedido_nuevo_nombre="aviso_pedido_nuevo",
+        plantilla_aviso_pedido_nuevo_idioma="es",
+    )
+
+    respuesta = _post_con_firma(
+        cliente, _payload_mensaje_boton("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"pago_recibido_{id_pedido}")
+    )
+
+    assert respuesta.status_code == 200
+    assert pedidos.obtener(id_pedido)["estado"] == "pagado"
+    llamada = next(l for l in llamadas_plantilla if l[1] == "aviso_pedido_nuevo")
+    assert llamada[0] == NUMERO_DUENO_DE_PRUEBA
+    assert llamada[2] == "es"
+    assert llamada[3][0] == str(id_pedido)
+    assert llamada[3][5] == numero_cliente  # teléfono COMPLETO del cliente en el contenido
+    assert llamada[4] is None  # es informativa, sin botones
+
+
+def test_boton_de_plantilla_de_pago_del_dueno_tambien_dispara_el_aviso_de_pedido_nuevo(
+    fabrica_cliente, envios, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    id_pedido = _pedido_en_verificacion(pedidos, numero_cliente)
+    llamadas_plantilla = []
+
+    def plantilla_fn(numero, nombre_plantilla, idioma, parametros_cuerpo, botones=None):
+        llamadas_plantilla.append((numero, nombre_plantilla, idioma, parametros_cuerpo, botones))
+        return True, "wamid-pedido-nuevo"
+
+    cliente = fabrica_cliente(
+        pedidos=pedidos,
+        numero_dueno=NUMERO_DUENO_DE_PRUEBA,
+        enviar_plantilla_fn=plantilla_fn,
+        plantilla_aviso_pedido_nuevo_nombre="aviso_pedido_nuevo",
+        plantilla_aviso_pedido_nuevo_idioma="es",
+    )
+
+    _post_con_firma(
+        cliente, _payload_boton_plantilla("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"pago_recibido_{id_pedido}")
+    )
+
+    assert pedidos.obtener(id_pedido)["estado"] == "pagado"
+    assert any(l[1] == "aviso_pedido_nuevo" for l in llamadas_plantilla)
 
 
 def test_un_pedido_en_pago_pendiente_bloquea_iniciar_un_pedido_nuevo(

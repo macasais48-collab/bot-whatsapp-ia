@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from recursos import cargar_recursos
-from webhook import PERFILES_NEGOCIO, RECURSOS_NEGOCIO
+from perfiles_negocio import PERFILES_NEGOCIO, RECURSOS_NEGOCIO
 
 
 def test_dockerfile_copia_todos_los_archivos_de_perfiles_de_negocio():
@@ -41,6 +41,8 @@ def test_dockerfile_copia_los_modulos_de_la_toma_de_pedidos():
         "gestionar_pedido.py",
         "basedatos.py",
         "red_meta.py",
+        "perfiles_negocio.py",
+        "pedido_resumen.py",
     ):
         assert nombre_archivo in contenido, (
             f"{nombre_archivo} no aparece en el Dockerfile: agrégalo a la línea COPY para que no "

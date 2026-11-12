@@ -1,13 +1,13 @@
 import hashlib
 import hmac
 import logging
-import re
 import time
 from pathlib import Path
 
 from flask import Flask, Response, request
 
 import pago_pedido
+import perfiles_negocio
 from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
 from env import obtener_env
@@ -38,27 +38,6 @@ logging.getLogger("werkzeug").setLevel(logging.WARNING)
 
 PUERTOS_PROHIBIDOS = {5000, 5001}
 
-PERFIL_NEGOCIO_POR_DEFECTO = "panaderia"
-PERFILES_NEGOCIO = {
-    "panaderia": Path(__file__).parent / "negocio.md",
-    "camilo": Path(__file__).parent / "perfil_camilo.md",
-    "tamales": Path(__file__).parent / "perfil_tamales.md",
-}
-RECURSOS_NEGOCIO = {
-    "panaderia": Path(__file__).parent / "recursos_panaderia.json",
-    "camilo": Path(__file__).parent / "recursos_camilo.json",
-    "tamales": Path(__file__).parent / "recursos_tamales.json",
-}
-
-# Perfiles de clientes reales (prospectos, demos privadas): sus archivos NUNCA
-# viven en este repositorio ni en la imagen Docker — información de un
-# tercero que todavía no es cliente. En vez de una lista blanca con el nombre
-# de cada cliente (el repo es público), se resuelven por convención desde
-# clientes/<clave>/, montada como volumen de solo lectura en docker-compose.yml
-# (ver _ruta_perfil_cliente más abajo).
-RAIZ_CLIENTES = Path(__file__).parent / "clientes"
-PATRON_CLAVE_PERFIL_CLIENTE = re.compile(r"^[a-z0-9_]{1,40}$")
-
 MENSAJE_DERIVACION_POR_DEFECTO = "Le comunico con una persona de nuestro equipo, que le responderá pronto."
 MENSAJE_SOLO_TEXTO = (
     "Por ahora solo puedo atender mensajes de texto. "
@@ -78,48 +57,6 @@ MENU_TEXTO_BOTON = "Ver menú"
 # el interactivo lleva este cuerpo corto fijo en su lugar.
 MENU_TEXTO_CUERPO = "Este es nuestro menú:"
 BOTONES_TEXTO_CUERPO_POR_DEFECTO = "Elija una opción:"
-
-
-def _resolver_clave_perfil() -> str:
-    clave = obtener_env("PERFIL_NEGOCIO") or PERFIL_NEGOCIO_POR_DEFECTO
-    if clave in PERFILES_NEGOCIO or PATRON_CLAVE_PERFIL_CLIENTE.match(clave):
-        return clave
-    raise ValueError(
-        "PERFIL_NEGOCIO no es válido. Debe ser uno de: "
-        + ", ".join(sorted(PERFILES_NEGOCIO))
-        + ", o la clave de un perfil de cliente (solo minúsculas, números y guion bajo, hasta "
-        "40 caracteres) con su carpeta clientes/<clave>/ correspondiente."
-    )
-
-
-def _ruta_perfil_cliente(clave: str, nombre_archivo: str) -> Path:
-    ruta = (RAIZ_CLIENTES / clave / nombre_archivo).resolve()
-    if not ruta.is_relative_to(RAIZ_CLIENTES.resolve()):
-        # Defensa en profundidad: con PATRON_CLAVE_PERFIL_CLIENTE esto no debería
-        # ser alcanzable (la clave nunca puede traer "/" ni ".."), pero cubre
-        # también el caso de un enlace simbólico dentro de clientes/ que apunte
-        # fuera de esa carpeta.
-        raise ValueError(f"Ruta de perfil de cliente fuera de {RAIZ_CLIENTES.name}/: '{clave}'.")
-    if not ruta.is_file():
-        raise ValueError(
-            f"El perfil '{clave}' requiere clientes/{clave}/{nombre_archivo} "
-            "(no incluido en este repositorio; pídeselo al desarrollador)."
-        )
-    return ruta
-
-
-def _resolver_ruta_negocio() -> Path:
-    clave = _resolver_clave_perfil()
-    if clave in PERFILES_NEGOCIO:
-        return PERFILES_NEGOCIO[clave]
-    return _ruta_perfil_cliente(clave, f"perfil_{clave}.md")
-
-
-def _resolver_ruta_recursos() -> Path:
-    clave = _resolver_clave_perfil()
-    if clave in RECURSOS_NEGOCIO:
-        return RECURSOS_NEGOCIO[clave]
-    return _ruta_perfil_cliente(clave, f"recursos_{clave}.json")
 
 
 def _extraer_mensaje_derivacion(ruta_negocio: Path) -> str:
@@ -181,6 +118,8 @@ def crear_app(
     numero_dueno: str | None = None,
     plantilla_aviso_dueno_nombre: str | None = None,
     plantilla_aviso_dueno_idioma: str | None = None,
+    plantilla_aviso_pedido_nuevo_nombre: str | None = None,
+    plantilla_aviso_pedido_nuevo_idioma: str | None = None,
     reloj=time.time,
 ) -> Flask:
     app = Flask(__name__)
@@ -190,7 +129,7 @@ def crear_app(
     if pedidos is None:
         pedidos = Pedidos()
     if perfil is None:
-        perfil = _resolver_clave_perfil()
+        perfil = perfiles_negocio.resolver_clave_perfil_activo()
     if numero_dueno is None:
         valor_numero_dueno = obtener_env("NUMERO_DUENO")
         numero_dueno = normalizar_numero(valor_numero_dueno) if valor_numero_dueno else None
@@ -208,10 +147,22 @@ def crear_app(
         )
         plantilla_aviso_dueno_nombre = None
         plantilla_aviso_dueno_idioma = None
+    if plantilla_aviso_pedido_nuevo_nombre is None:
+        plantilla_aviso_pedido_nuevo_nombre = obtener_env("PLANTILLA_AVISO_PEDIDO_NUEVO_NOMBRE") or None
+    if plantilla_aviso_pedido_nuevo_idioma is None:
+        plantilla_aviso_pedido_nuevo_idioma = obtener_env("PLANTILLA_AVISO_PEDIDO_NUEVO_IDIOMA") or None
+    if bool(plantilla_aviso_pedido_nuevo_nombre) != bool(plantilla_aviso_pedido_nuevo_idioma):
+        logger.warning(
+            "PLANTILLA_AVISO_PEDIDO_NUEVO_NOMBRE y PLANTILLA_AVISO_PEDIDO_NUEVO_IDIOMA deben "
+            "configurarse juntas; con solo una de las dos, el aviso de pedido nuevo usa el "
+            "mensaje libre de siempre."
+        )
+        plantilla_aviso_pedido_nuevo_nombre = None
+        plantilla_aviso_pedido_nuevo_idioma = None
     if cerebro is None or mensaje_derivacion is None:
-        ruta_negocio_resuelta = _resolver_ruta_negocio()
+        ruta_negocio_resuelta = perfiles_negocio.ruta_perfil_para_clave(perfil)
     if cerebro is None:
-        ruta_recursos_resuelta = _resolver_ruta_recursos()
+        ruta_recursos_resuelta = perfiles_negocio.ruta_recursos_para_clave(perfil)
         cerebro = Cerebro(
             crear_proveedor_ia(),
             historial_dedup,
@@ -243,6 +194,8 @@ def crear_app(
         enviar_imagen_con_wamid_fn=enviar_imagen_con_wamid_fn,
         plantilla_aviso_dueno_nombre=plantilla_aviso_dueno_nombre,
         plantilla_aviso_dueno_idioma=plantilla_aviso_dueno_idioma,
+        plantilla_aviso_pedido_nuevo_nombre=plantilla_aviso_pedido_nuevo_nombre,
+        plantilla_aviso_pedido_nuevo_idioma=plantilla_aviso_pedido_nuevo_idioma,
     )
 
     @app.after_request
@@ -411,7 +364,14 @@ def crear_app(
             if id_boton.startswith(pago_pedido.PREFIJO_BOTON_PAGO_RECIBIDO):
                 pedido_id = _id_pedido_desde_boton(id_boton, pago_pedido.PREFIJO_BOTON_PAGO_RECIBIDO)
                 if pedido_id is not None:
-                    resultado = pago_pedido.confirmar_pago(pedidos, pedido_id, ahora, enviar_texto_fn)
+                    resultado = pago_pedido.confirmar_pago(
+                        pedidos, pedido_id, ahora, enviar_texto_fn,
+                        domicilio=recursos.get("domicilio", {}),
+                        numero_dueno=numero_dueno,
+                        enviar_plantilla_fn=enviar_plantilla_fn,
+                        plantilla_nombre=plantilla_aviso_pedido_nuevo_nombre,
+                        plantilla_idioma=plantilla_aviso_pedido_nuevo_idioma,
+                    )
                     enviar_texto_fn(numero_dueno, resultado)
                     return
             elif id_boton.startswith(pago_pedido.PREFIJO_BOTON_PAGO_NO_LLEGO):

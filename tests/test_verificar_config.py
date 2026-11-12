@@ -59,6 +59,15 @@ def test_el_reporte_incluye_todas_las_variables_esperadas():
         assert nombre in reporte
 
 
+def test_perfil_negocio_se_reporta_sin_mostrar_su_valor():
+    # PERFIL_NEGOCIO puede ser la clave de un cliente real (ver clientes/): se
+    # reporta su presencia, nunca el valor, igual que el resto de variables.
+    reporte = generar_reporte({"PERFIL_NEGOCIO": "un_cliente_cualquiera"})
+
+    assert "PERFIL_NEGOCIO: con valor" in reporte
+    assert "un_cliente_cualquiera" not in reporte
+
+
 def test_numero_dueno_con_formato_valido_no_lleva_advertencia():
     reporte = generar_reporte({"NUMERO_DUENO": "573001112233"})
 

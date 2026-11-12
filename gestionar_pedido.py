@@ -1,10 +1,25 @@
 import sys
 import time
 
+import perfiles_negocio
+from env import obtener_env
+from mensajes_enriquecidos import enviar_plantilla
 from pago_pedido import confirmar_pago, rechazar_pago
 from pedidos import ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_POR_VERIFICAR, Pedidos
-from telefono import enmascarar_numero
+from recursos import cargar_recursos
+from telefono import enmascarar_numero, normalizar_numero
 from whatsapp import enviar_texto
+
+
+def _domicilio_del_pedido(pedido: dict) -> dict:
+    # El aviso de pedido nuevo necesita las zonas de domicilio para armar el
+    # resumen; se resuelven por el perfil guardado en el propio pedido, nunca
+    # importando webhook.py (este script nunca debe depender de Flask).
+    try:
+        ruta_recursos = perfiles_negocio.ruta_recursos_para_clave(pedido["perfil"])
+        return cargar_recursos(ruta_recursos).get("domicilio", {})
+    except (KeyError, ValueError):
+        return {}
 
 
 def _formatear_pesos(valor: int) -> str:
@@ -60,8 +75,19 @@ def main(argv: list[str] | None = None) -> int:
             print("Cancelado, no se hizo ningún cambio.")
             return 0
 
-        funcion = confirmar_pago if argv[0] == "confirmar" else rechazar_pago
-        print(funcion(pedidos, pedido_id, time.time(), enviar_texto))
+        ahora = time.time()
+        if argv[0] == "confirmar":
+            numero_dueno_valor = obtener_env("NUMERO_DUENO")
+            print(confirmar_pago(
+                pedidos, pedido_id, ahora, enviar_texto,
+                domicilio=_domicilio_del_pedido(pedido),
+                numero_dueno=normalizar_numero(numero_dueno_valor) if numero_dueno_valor else None,
+                enviar_plantilla_fn=enviar_plantilla,
+                plantilla_nombre=obtener_env("PLANTILLA_AVISO_PEDIDO_NUEVO_NOMBRE") or None,
+                plantilla_idioma=obtener_env("PLANTILLA_AVISO_PEDIDO_NUEVO_IDIOMA") or None,
+            ))
+        else:
+            print(rechazar_pago(pedidos, pedido_id, ahora, enviar_texto))
         return 0
 
     print("Uso: gestionar_pedido.py [listar | confirmar <id> | no-llego <id>]")

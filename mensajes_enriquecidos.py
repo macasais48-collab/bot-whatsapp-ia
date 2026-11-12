@@ -186,13 +186,30 @@ def enviar_plantilla(
     nombre_plantilla: str,
     idioma: str,
     parametros_cuerpo: list[str],
-    payload_boton_pago_recibido: str,
-    payload_boton_no_llego: str,
+    botones: list[str] | None = None,
 ) -> tuple[bool, str | None]:
     # Mensaje de plantilla (aprobado por Meta): la única forma de que un aviso
-    # al dueño llegue siempre, incluso fuera de la ventana de 24 horas. Ver
-    # docs/plantilla_aviso_dueno.md para la especificación exacta que Camilo
-    # crea en el WhatsApp Manager.
+    # al dueño llegue siempre, incluso fuera de la ventana de 24 horas. `botones`
+    # es la lista de payloads de los botones de respuesta rápida, en orden (el
+    # índice de cada componente es su posición); None o [] = sin componentes de
+    # botón (plantillas puramente informativas, como el aviso de pedido nuevo).
+    # Ver docs/plantilla_aviso_dueno.md / docs/plantilla_aviso_pedido_nuevo.md
+    # para las especificaciones exactas que Camilo crea en el WhatsApp Manager.
+    componentes = [
+        {
+            "type": "body",
+            "parameters": [{"type": "text", "text": texto} for texto in parametros_cuerpo],
+        }
+    ]
+    for indice, payload in enumerate(botones or []):
+        componentes.append(
+            {
+                "type": "button",
+                "sub_type": "quick_reply",
+                "index": str(indice),
+                "parameters": [{"type": "payload", "payload": payload}],
+            }
+        )
     cuerpo = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
@@ -201,24 +218,7 @@ def enviar_plantilla(
         "template": {
             "name": nombre_plantilla,
             "language": {"code": idioma},
-            "components": [
-                {
-                    "type": "body",
-                    "parameters": [{"type": "text", "text": texto} for texto in parametros_cuerpo],
-                },
-                {
-                    "type": "button",
-                    "sub_type": "quick_reply",
-                    "index": "0",
-                    "parameters": [{"type": "payload", "payload": payload_boton_pago_recibido}],
-                },
-                {
-                    "type": "button",
-                    "sub_type": "quick_reply",
-                    "index": "1",
-                    "parameters": [{"type": "payload", "payload": payload_boton_no_llego}],
-                },
-            ],
+            "components": componentes,
         },
     }
     return _enviar_con_wamid(cuerpo)

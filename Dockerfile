@@ -25,9 +25,11 @@ COPY --chown=appuser:appuser \
     mensajes_enriquecidos.py \
     negocio.md \
     pago_pedido.py \
+    pedido_resumen.py \
     pedidos.py \
     perfil_camilo.md \
     perfil_tamales.md \
+    perfiles_negocio.py \
     recursos.py \
     recursos_camilo.json \
     recursos_panaderia.json \

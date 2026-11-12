@@ -2,7 +2,9 @@ import logging
 import time
 import unicodedata
 
-from pago_pedido import PREFIJO_BOTON_PAGO_NO_LLEGO, PREFIJO_BOTON_PAGO_RECIBIDO
+from pago_pedido import PREFIJO_BOTON_PAGO_NO_LLEGO, PREFIJO_BOTON_PAGO_RECIBIDO, avisar_pedido_nuevo
+from pedido_resumen import construir_resumen as _construir_resumen
+from pedido_resumen import formatear_pesos as _formatear_pesos
 from pedidos import ESTADO_EN_CONSTRUCCION, ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_POR_VERIFICAR, Pedidos
 from telefono import enmascarar_numero
 
@@ -64,10 +66,6 @@ TEXTO_CONSENTIMIENTO_RECHAZADO = (
 TEXTO_PEDIR_DIRECCION = "Por favor compárteme su dirección exacta (puede escribirla o compartir su ubicación)."
 
 
-def _formatear_pesos(valor: int) -> str:
-    return f"${valor:,}".replace(",", ".")
-
-
 def _normalizar(texto: str) -> str:
     # Minúsculas y sin tildes/diacríticos, para reconocer "Cancelar", "CANCELAR"
     # o "cancélar" igual que "cancelar" — sin ninguna interpretación con IA, solo
@@ -104,32 +102,6 @@ def _parsear_cantidad(texto: str) -> int | None:
     return cantidad
 
 
-def _construir_resumen(pedido: dict, domicilio: dict) -> tuple[str, int]:
-    lineas = ["Resumen de su pedido:"]
-    total = 0
-    for item in pedido["items"]:
-        lineas.append(f'- {item["cantidad"]} x {item["nombre"]}: {_formatear_pesos(item["subtotal"])}')
-        total += item["subtotal"]
-
-    tipo_entrega = pedido["tipo_entrega"]
-    zona_domicilio = pedido["zona_domicilio"]
-    if tipo_entrega == "domicilio" and zona_domicilio is not None:
-        nombre_zona = domicilio[zona_domicilio]["nombre"]
-        costo_domicilio = domicilio[zona_domicilio]["costo"]
-        lineas.append(f"Entrega: Domicilio - {nombre_zona}")
-        if pedido.get("direccion_texto"):
-            lineas.append(f"Dirección: {pedido['direccion_texto']}")
-        elif pedido.get("latitud") is not None:
-            lineas.append("Dirección: ubicación compartida por WhatsApp")
-        lineas.append(f"Costo de domicilio: {_formatear_pesos(costo_domicilio)}")
-        total += costo_domicilio
-    else:
-        lineas.append("Entrega: Recoger en el local.")
-
-    lineas.append(f"Total: {_formatear_pesos(total)}")
-    return "\n".join(lineas), total
-
-
 class FlujoPedido:
     def __init__(
         self,
@@ -150,6 +122,8 @@ class FlujoPedido:
         enviar_imagen_con_wamid_fn=None,
         plantilla_aviso_dueno_nombre: str | None = None,
         plantilla_aviso_dueno_idioma: str | None = None,
+        plantilla_aviso_pedido_nuevo_nombre: str | None = None,
+        plantilla_aviso_pedido_nuevo_idioma: str | None = None,
     ) -> None:
         self._pedidos = pedidos
         self._catalogo = catalogo
@@ -168,6 +142,8 @@ class FlujoPedido:
         self._enviar_imagen_con_wamid_fn = enviar_imagen_con_wamid_fn
         self._plantilla_aviso_dueno_nombre = plantilla_aviso_dueno_nombre
         self._plantilla_aviso_dueno_idioma = plantilla_aviso_dueno_idioma
+        self._plantilla_aviso_pedido_nuevo_nombre = plantilla_aviso_pedido_nuevo_nombre
+        self._plantilla_aviso_pedido_nuevo_idioma = plantilla_aviso_pedido_nuevo_idioma
         self._manejadores = {
             "producto": self._manejar_producto,
             "cantidad": self._manejar_cantidad,
@@ -305,6 +281,19 @@ class FlujoPedido:
             numero, f'Pedido #{pedido["id"]} recibido.\n\n{texto_resumen}\n{linea_tiempo}\n{linea_pago}'
         )
 
+        pedido_actualizado = self._pedidos.obtener(pedido["id"])
+        avisar_pedido_nuevo(
+            self._pedidos,
+            self._numero_dueno,
+            pedido_actualizado,
+            self._domicilio,
+            ahora,
+            self._enviar_texto_fn,
+            enviar_plantilla_fn=self._enviar_plantilla_fn,
+            plantilla_nombre=self._plantilla_aviso_pedido_nuevo_nombre,
+            plantilla_idioma=self._plantilla_aviso_pedido_nuevo_idioma,
+        )
+
     def _avisar_dueno(self, pedido: dict, mensaje: dict) -> None:
         if not self._numero_dueno:
             return
@@ -359,8 +348,10 @@ class FlujoPedido:
             self._plantilla_aviso_dueno_nombre,
             self._plantilla_aviso_dueno_idioma,
             [str(pedido["id"]), _formatear_pesos(pedido["total"])],
-            f"{PREFIJO_BOTON_PAGO_RECIBIDO}{pedido['id']}",
-            f"{PREFIJO_BOTON_PAGO_NO_LLEGO}{pedido['id']}",
+            botones=[
+                f"{PREFIJO_BOTON_PAGO_RECIBIDO}{pedido['id']}",
+                f"{PREFIJO_BOTON_PAGO_NO_LLEGO}{pedido['id']}",
+            ],
         )
         if ok and wamid:
             self._pedidos.registrar_wamid_aviso_dueno(wamid, pedido["id"], "plantilla", ahora)

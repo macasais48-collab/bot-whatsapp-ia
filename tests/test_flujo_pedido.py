@@ -80,8 +80,8 @@ class EnviosPlantilla:
         self._ok = ok
         self._wamid = wamid
 
-    def __call__(self, numero, nombre_plantilla, idioma, parametros_cuerpo, payload_recibido, payload_no_llego):
-        self.llamadas.append((numero, nombre_plantilla, idioma, parametros_cuerpo, payload_recibido, payload_no_llego))
+    def __call__(self, numero, nombre_plantilla, idioma, parametros_cuerpo, botones=None):
+        self.llamadas.append((numero, nombre_plantilla, idioma, parametros_cuerpo, botones))
         return self._ok, (self._wamid if self._ok else None)
 
 
@@ -151,6 +151,8 @@ def _crear_flujo_pago(
     enviar_imagen_con_wamid_fn=None,
     plantilla_aviso_dueno_nombre=None,
     plantilla_aviso_dueno_idioma=None,
+    plantilla_aviso_pedido_nuevo_nombre=None,
+    plantilla_aviso_pedido_nuevo_idioma=None,
 ):
     pedidos = Pedidos(tmp_path / "pedidos.db")
     texto, botones, lista = EnviosTexto(), EnviosBotones(), EnviosLista()
@@ -178,6 +180,8 @@ def _crear_flujo_pago(
         enviar_imagen_con_wamid_fn=enviar_imagen_con_wamid_fn,
         plantilla_aviso_dueno_nombre=plantilla_aviso_dueno_nombre,
         plantilla_aviso_dueno_idioma=plantilla_aviso_dueno_idioma,
+        plantilla_aviso_pedido_nuevo_nombre=plantilla_aviso_pedido_nuevo_nombre,
+        plantilla_aviso_pedido_nuevo_idioma=plantilla_aviso_pedido_nuevo_idioma,
     )
     return flujo, pedidos, texto, botones, lista, enviar_imagen_fn, obtener_media_id_fn, reenviar_media_fn
 
@@ -792,8 +796,7 @@ def test_con_plantilla_configurada_el_aviso_al_dueno_usa_siempre_la_plantilla(tm
             "aviso_pago_pendiente_verificacion",
             "es",
             [str(pedido["id"]), "$16.000"],
-            f"pago_recibido_{pedido['id']}",
-            f"pago_no_llego_{pedido['id']}",
+            [f"pago_recibido_{pedido['id']}", f"pago_no_llego_{pedido['id']}"],
         )
     ]
     # El wamid de la plantilla queda asociado al pedido con tipo "plantilla".
@@ -1031,3 +1034,60 @@ def test_fallo_del_aviso_al_dueno_no_se_muestra_al_cliente_y_pedido_queda_en_ver
     )
     assert pedidos.obtener_activo(numero)["estado"] == "pago_por_verificar"
     assert any("aviso al dueño" in registro.getMessage() for registro in caplog.records)
+
+
+def test_confirmar_en_efectivo_avisa_al_dueno_de_un_pedido_nuevo(tmp_path):
+    numero_dueno = "573005554433"
+    plantilla = EnviosPlantilla()
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(
+        tmp_path,
+        numero_dueno=numero_dueno,
+        enviar_plantilla_fn=plantilla,
+        plantilla_aviso_pedido_nuevo_nombre="aviso_pedido_nuevo",
+        plantilla_aviso_pedido_nuevo_idioma="es",
+    )
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, cantidad="2", tipo_entrega="recoger_local")
+
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_efectivo"))
+
+    pedido = pedidos.obtener_activo(numero) or pedidos.obtener_en_construccion(numero)
+    assert plantilla.llamadas
+    numero_llamada, nombre, idioma, parametros, boton_llamada = plantilla.llamadas[0]
+    assert numero_llamada == numero_dueno
+    assert nombre == "aviso_pedido_nuevo"
+    assert boton_llamada is None
+    assert parametros[4] == "Efectivo"
+    assert parametros[5] == numero  # teléfono completo del cliente en el contenido
+
+
+def test_pagar_en_efectivo_desde_pago_pendiente_tambien_avisa_al_dueno(tmp_path):
+    numero_dueno = "573005554433"
+    plantilla = EnviosPlantilla()
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(
+        tmp_path,
+        numero_dueno=numero_dueno,
+        enviar_plantilla_fn=plantilla,
+        plantilla_aviso_pedido_nuevo_nombre="aviso_pedido_nuevo",
+        plantilla_aviso_pedido_nuevo_idioma="es",
+    )
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_efectivo"))
+
+    assert plantilla.llamadas
+    assert plantilla.llamadas[0][0] == numero_dueno
+
+
+def test_confirmar_en_efectivo_sin_plantilla_de_pedido_nuevo_usa_texto_libre(tmp_path):
+    numero_dueno = "573005554433"
+    flujo, pedidos, texto, botones, lista, *_ = _crear_flujo_pago(tmp_path, numero_dueno=numero_dueno)
+    numero = "573001112233"
+    _avanzar_hasta_metodo_pago(flujo, numero, tipo_entrega="recoger_local")
+
+    flujo.manejar_mensaje(numero, _mensaje_boton("pago_efectivo"))
+
+    llamada_dueno = next(l for l in texto.llamadas if l[0] == numero_dueno)
+    assert numero in llamada_dueno[1]  # teléfono completo también en el mensaje libre
