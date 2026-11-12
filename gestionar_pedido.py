@@ -3,6 +3,7 @@ import time
 
 import estado_pedido
 import perfiles_negocio
+import reporte_semanal
 from env import obtener_env
 from mensajes_enriquecidos import enviar_plantilla, enviar_texto_con_wamid
 from pago_pedido import confirmar_pago, rechazar_pago
@@ -123,6 +124,12 @@ def main(argv: list[str] | None = None) -> int:
             print(rechazar_pago(pedidos, pedido_id, ahora, enviar_texto))
         return 0
 
+    if argv == ["reporte"]:
+        # Solo imprime el reporte de la semana en curso (el mismo que recibe el
+        # dueño al escribir "reporte"); nunca envía nada por WhatsApp.
+        print(reporte_semanal.texto_semana_en_curso(pedidos, time.time()))
+        return 0
+
     if argv[0] == "estado" and argv[1:] == ["listar"]:
         listar_estados(pedidos)
         return 0
@@ -137,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         "Uso: gestionar_pedido.py [listar | confirmar <id> | no-llego <id> | "
-        "estado listar | estado avanzar <id>]"
+        "estado listar | estado avanzar <id> | reporte]"
     )
     return 1
 

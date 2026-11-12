@@ -82,6 +82,17 @@ def test_numero_dueno_con_formato_invalido_avisa_sin_mostrar_el_valor():
     assert "123" not in reporte.split("NUMERO_DUENO:")[1].split("\n")[0]
 
 
+def test_variables_del_reporte_semanal_estan_y_se_marcan_como_opcionales():
+    reporte = generar_reporte({"REPORTE_SEMANAL_DIA": "lunes"})
+
+    assert "REPORTE_SEMANAL_DIA: con valor" in reporte
+    assert "lunes" not in reporte
+    for nombre in ("REPORTE_SEMANAL_HORA", "PLANTILLA_REPORTE_SEMANAL_NOMBRE", "PLANTILLA_REPORTE_SEMANAL_IDIOMA"):
+        assert f"{nombre}: VACÍO (opcional)" in reporte
+    # Las de siempre no cambian: vacías, sin la marca de opcional.
+    assert "WHATSAPP_TOKEN: VACÍO\n" in reporte + "\n"
+
+
 def test_numero_dueno_con_mas_espacios_y_guiones_se_normaliza_antes_de_validar():
     reporte = generar_reporte({"NUMERO_DUENO": "+57 300 111 2233"})
 

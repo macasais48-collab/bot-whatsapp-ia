@@ -1594,3 +1594,97 @@ def test_status_failed_de_aviso_de_estado_con_otro_codigo_sigue_siendo_advertenc
     advertencias = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
     assert "131026" in advertencias
     assert f"pedido={pedido_id}" in advertencias
+
+
+# -- Sub-fase 5c: reporte semanal --
+
+
+def test_palabra_reporte_del_dueno_responde_con_la_semana_en_curso_sin_telefonos(
+    fabrica_cliente, envios, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    _pedido_confirmado_webhook(pedidos, "573001112233")
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.1", NUMERO_DUENO_DE_PRUEBA, "Reporte"))
+
+    assert len(envios.llamadas) == 1
+    numero, texto = envios.llamadas[0]
+    assert numero == NUMERO_DUENO_DE_PRUEBA
+    assert texto.startswith("Reporte de la semana en curso")
+    assert "Pedidos confirmados: 1" in texto
+    assert "573001112233" not in texto
+
+
+def test_palabra_reporte_desde_otro_numero_nunca_entrega_el_reporte(fabrica_cliente, envios, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    _pedido_confirmado_webhook(pedidos)
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.1", "573009998877", "reporte"))
+
+    assert envios.llamadas == [("573009998877", "ok")]  # respuesta normal de la IA falsa
+
+
+def test_crear_app_no_arranca_el_programador_y_sin_dueno_no_hay_reporte_automatico(
+    fabrica_cliente, monkeypatch, tmp_path
+):
+    import reporte_semanal
+
+    llamadas = []
+    monkeypatch.setattr(reporte_semanal, "iniciar_programador", lambda *a, **k: llamadas.append(a))
+    cliente = fabrica_cliente(pedidos=Pedidos(tmp_path / "pedidos.db"))
+
+    assert llamadas == []  # crear la app nunca arranca hilos
+    assert cliente.application.extensions["iniciar_reporte_semanal"]() is None
+    assert llamadas == []  # sin NUMERO_DUENO no se programa nada
+
+
+def test_al_iniciar_el_reporte_semanal_se_recupera_el_de_la_semana_anterior(
+    fabrica_cliente, envios_con_wamid, monkeypatch, tmp_path
+):
+    import reporte_semanal
+
+    programado = {}
+
+    def iniciar_programador_falso(tarea_semanal, tarea_recuperacion, dia, hora, minuto):
+        programado.update(dia=dia, hora=hora, minuto=minuto)
+        tarea_recuperacion()  # lo que APScheduler ejecutaría de inmediato
+
+    monkeypatch.setattr(reporte_semanal, "iniciar_programador", iniciar_programador_falso)
+    monkeypatch.setenv("REPORTE_SEMANAL_DIA", "lunes")
+    monkeypatch.setenv("REPORTE_SEMANAL_HORA", "8")
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    cliente = fabrica_cliente(pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    # El reloj de prueba cae un martes: ya pasó el lunes 8:00 y falta el reporte.
+    cliente.application.extensions["iniciar_reporte_semanal"]()
+
+    assert programado == {"dia": 0, "hora": 8, "minuto": 0}
+    assert len(envios_con_wamid.llamadas) == 1
+    assert envios_con_wamid.llamadas[0][0] == NUMERO_DUENO_DE_PRUEBA
+    assert envios_con_wamid.llamadas[0][1].startswith("Reporte semanal del ")
+    _, _, semana, _ = reporte_semanal.semana_anterior(RELOJ_PRUEBA_SEGUNDOS)
+    assert pedidos.reporte_enviado(semana)
+
+
+def test_status_failed_del_reporte_semanal_es_informativo_y_asociado_a_la_semana(
+    fabrica_cliente, caplog, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedidos.reservar_reporte("2026-W45", ahora=1000.0)
+    pedidos.fijar_wamid_reporte("2026-W45", "wamid.reporte")
+    cliente = fabrica_cliente(pedidos=pedidos)
+    caplog.set_level(logging.INFO, logger="webhook")
+    payload = _payload_estado(
+        "wamid.reporte", NUMERO_DUENO_DE_PRUEBA, status="failed",
+        errors=[{"code": 131047, "title": "Re-engagement message"}],
+    )
+
+    _post_con_firma(cliente, payload)
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    informativos = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.INFO)
+    assert "2026-W45" in informativos
+    assert "desconocido" not in informativos
+    assert NUMERO_DUENO_DE_PRUEBA not in informativos

@@ -23,6 +23,12 @@ def _una_linea(texto: str, limite: int) -> str:
     return saneado[: limite - 1].rstrip() + "…"
 
 
+def una_linea(texto: str, limite: int = LIMITE_UNA_LINEA_POR_DEFECTO) -> str:
+    """Saneado público para cualquier variable de plantilla (lo usa también
+    reporte_semanal.py): sin saltos de línea, tabulaciones ni 4+ espacios."""
+    return _una_linea(texto, limite)
+
+
 def construir_resumen(pedido: dict, domicilio: dict) -> tuple[str, int]:
     lineas = ["Resumen de su pedido:"]
     total = 0

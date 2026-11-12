@@ -236,6 +236,22 @@ def test_estado_con_argumentos_invalidos_muestra_el_uso(tmp_path, monkeypatch, c
     assert "estado avanzar <id>" in capsys.readouterr().out
 
 
+def test_reporte_imprime_la_semana_en_curso_sin_telefonos_ni_envios(tmp_path, monkeypatch, capsys):
+    envios, envios_con_wamid = _preparar_estado(monkeypatch, tmp_path)
+    _pedido_confirmado(tmp_path)  # creado en 1000.0; "ahora" una hora después, misma semana
+    monkeypatch.setattr("gestionar_pedido.time.time", lambda: 1000.0 + 3600)
+
+    codigo = gestionar_pedido.main(["reporte"])
+
+    salida = capsys.readouterr().out
+    assert codigo == 0
+    assert "Reporte de la semana en curso" in salida
+    assert "Pedidos confirmados: 1" in salida
+    assert "2 x Producto A" in salida
+    assert "573001112233" not in salida
+    assert envios == [] and envios_con_wamid == []
+
+
 def test_gestionar_pedido_nunca_importa_webhook():
     ruta = Path(gestionar_pedido.__file__)
     contenido = ruta.read_text(encoding="utf-8")

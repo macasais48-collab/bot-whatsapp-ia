@@ -172,6 +172,34 @@ docker compose exec bot-whatsapp python gestionar_pedido.py estado avanzar <nume
 
 Igual que los comandos de pago, el script enmascara el teléfono del cliente y pide confirmación explícita antes de aplicar el cambio.
 
+### Reporte semanal
+
+Si `NUMERO_DUENO` está configurada, el bot envía al dueño cada semana un reporte con las cifras de la última semana completa (lunes a domingo, hora de Bogotá):
+- pedidos confirmados y ventas totales;
+- desglose por método de pago y por forma de entrega;
+- los 3 productos más vendidos;
+- entregados frente a pendientes.
+
+Por defecto sale el lunes a las 8:00. Se puede cambiar con `REPORTE_SEMANAL_DIA` y `REPORTE_SEMANAL_HORA`.
+
+El reporte solo tiene cifras agregadas y nombres de productos del catálogo. Las consultas ni siquiera leen teléfonos, nombres ni direcciones.
+
+**Cómo se envía:**
+- Si están configuradas `PLANTILLA_REPORTE_SEMANAL_NOMBRE` y `PLANTILLA_REPORTE_SEMANAL_IDIOMA`, va por plantilla aprobada y llega aunque la ventana de 24 horas esté cerrada. La especificación está en `docs/plantilla_reporte_semanal.md`.
+- Si no, va como mensaje libre. Si la ventana estaba cerrada, el fallo queda en el log como informativo, asociado a la semana.
+
+**Envío una sola vez por semana:** cada semana enviada queda registrada en la tabla `reportes_enviados`, con una reserva atómica antes de enviar. Así la misma semana no se envía dos veces.
+
+**Recuperación al arrancar:** si el bot estaba apagado a la hora programada, al arrancar envía el reporte que faltaba.
+
+**Cómo arranca el programador:** el envío automático usa APScheduler y arranca una vez por worker desde `gunicorn.conf.py` (`post_worker_init`), no dentro de `crear_app`. Hoy gunicorn corre con 1 worker. Si se suben los workers, la reserva por semana sigue garantizando un solo envío.
+
+**A pedido:** el dueño puede escribir **reporte** en cualquier momento para ver las cifras de la semana en curso, desde el lunes. También hay un respaldo por consola, que solo imprime y nunca envía:
+
+```bash
+docker compose exec bot-whatsapp python gestionar_pedido.py reporte
+```
+
 **Logging bajo gunicorn:** `gunicorn.conf.py` (cargado con `--config` desde el `CMD` del Dockerfile) configura el logging en cada worker (`post_fork`), para que los eventos de `webhook.py`, `flujo_pedido.py` y `pago_pedido.py` (p. ej. "Pedido #7 confirmado", "mensaje antiguo ignorado") se vean con `docker compose logs`. El log de accesos propio de gunicorn está desactivado para no duplicar la línea que ya registra `webhook.py` por cada petición (método, ruta sin cadena de consulta, código de estado) — esa línea nunca incluye el verify token de Meta, y las peticiones a `/salud` del healthcheck no se registran. Los eventos de la aplicación nunca incluyen el número de teléfono completo (solo los últimos 4 dígitos, vía `telefono.py`), el texto de los mensajes, direcciones, ubicaciones ni el contenido de un comprobante de pago — solo el hecho de que algo pasó.
 
 ### Créditos de fotos
@@ -223,15 +251,17 @@ BotWhatsApp/
 ├── flujo_pedido.py                # Máquina de estados de la toma de pedidos y el pago (sin IA, sin Flask)
 ├── pago_pedido.py                 # Confirmar/rechazar un pago y avisar al dueño de un pedido nuevo (compartido webhook/script)
 ├── estado_pedido.py               # Estados de entrega del pedido: lista del dueño, botón del siguiente paso, aviso al cliente
-├── gestionar_pedido.py             # CLI de respaldo: pagos y estados de entrega dentro del contenedor
+├── reporte_semanal.py             # Reporte semanal al dueño: cifras agregadas, envío automático (APScheduler) y a pedido
+├── gestionar_pedido.py             # CLI de respaldo: pagos, estados de entrega y reporte dentro del contenedor
 ├── telefono.py                    # Enmascarado/normalización de número de teléfono
-├── gunicorn.conf.py                # Logging de gunicorn (stdout; accesslog propio desactivado)
+├── gunicorn.conf.py                # Logging de gunicorn y arranque del reporte semanal (post_worker_init)
 ├── verificar_config.py            # Verifica que .env tenga las variables, sin exponer valores
 ├── verificar_suscripcion_waba.py  # Diagnóstico: apps suscritas a la cuenta de WhatsApp
 ├── suscribir_app_a_waba.py        # Suscribe esta app a la cuenta de WhatsApp
 ├── docs/capturas/                 # Capturas de pantalla de este README
 ├── docs/plantilla_aviso_dueno.md  # Especificación de la plantilla del aviso al dueño (WhatsApp Manager)
 ├── docs/plantilla_aviso_pedido_nuevo.md  # Especificación de la plantilla del aviso de pedido nuevo (WhatsApp Manager)
+├── docs/plantilla_reporte_semanal.md     # Especificación de la plantilla del reporte semanal (WhatsApp Manager)
 ├── tests/                         # Pruebas automáticas (pytest)
 ├── tests/carga/                   # Prueba de carga aparte (no es parte de la suite de pytest)
 └── clientes/<clave>/              # Perfiles de cliente privados (fuera de git y de la imagen; ver "Perfiles de cliente")

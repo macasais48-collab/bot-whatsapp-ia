@@ -9,6 +9,7 @@ from flask import Flask, Response, request
 import estado_pedido
 import pago_pedido
 import perfiles_negocio
+import reporte_semanal
 from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
 from env import obtener_env
@@ -47,7 +48,8 @@ MENSAJE_SOLO_TEXTO = (
 )
 MENSAJE_DUENO_RECORDATORIO = (
     "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar. "
-    "Escriba *pedidos* para ver los pedidos activos y avanzar su estado."
+    "Escriba *pedidos* para ver los pedidos activos y avanzar su estado, o *reporte* "
+    "para ver las ventas de la semana."
 )
 # Código de error de Meta cuando un mensaje libre se envía fuera de la ventana
 # de 24 horas del destinatario (re-engagement message).
@@ -127,6 +129,8 @@ def crear_app(
     plantilla_aviso_dueno_idioma: str | None = None,
     plantilla_aviso_pedido_nuevo_nombre: str | None = None,
     plantilla_aviso_pedido_nuevo_idioma: str | None = None,
+    plantilla_reporte_semanal_nombre: str | None = None,
+    plantilla_reporte_semanal_idioma: str | None = None,
     reloj=time.time,
 ) -> Flask:
     app = Flask(__name__)
@@ -166,6 +170,18 @@ def crear_app(
         )
         plantilla_aviso_pedido_nuevo_nombre = None
         plantilla_aviso_pedido_nuevo_idioma = None
+    if plantilla_reporte_semanal_nombre is None:
+        plantilla_reporte_semanal_nombre = obtener_env("PLANTILLA_REPORTE_SEMANAL_NOMBRE") or None
+    if plantilla_reporte_semanal_idioma is None:
+        plantilla_reporte_semanal_idioma = obtener_env("PLANTILLA_REPORTE_SEMANAL_IDIOMA") or None
+    if bool(plantilla_reporte_semanal_nombre) != bool(plantilla_reporte_semanal_idioma):
+        logger.warning(
+            "PLANTILLA_REPORTE_SEMANAL_NOMBRE y PLANTILLA_REPORTE_SEMANAL_IDIOMA deben "
+            "configurarse juntas; con solo una de las dos, el reporte semanal automático usa "
+            "el mensaje libre."
+        )
+        plantilla_reporte_semanal_nombre = None
+        plantilla_reporte_semanal_idioma = None
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = perfiles_negocio.ruta_perfil_para_clave(perfil)
     if cerebro is None:
@@ -204,6 +220,42 @@ def crear_app(
         plantilla_aviso_pedido_nuevo_nombre=plantilla_aviso_pedido_nuevo_nombre,
         plantilla_aviso_pedido_nuevo_idioma=plantilla_aviso_pedido_nuevo_idioma,
     )
+
+    # -- Reporte semanal automático (sub-fase 5c) --
+    # crear_app NO arranca el programador (las pruebas crean la app muchas
+    # veces): solo deja lista la función, y gunicorn.conf.py (post_worker_init)
+    # la llama una vez cuando el worker termina de cargar la app.
+    envio_reporte = {
+        "numero_dueno": numero_dueno,
+        "enviar_texto_con_wamid_fn": enviar_texto_con_wamid_fn,
+        "enviar_plantilla_fn": enviar_plantilla_fn,
+        "plantilla_nombre": plantilla_reporte_semanal_nombre,
+        "plantilla_idioma": plantilla_reporte_semanal_idioma,
+    }
+
+    def _iniciar_reporte_semanal():
+        if not numero_dueno:
+            logger.info("Reporte semanal automático desactivado: NUMERO_DUENO no está configurada.")
+            return None
+        dia, hora, minuto = reporte_semanal.leer_programacion(
+            obtener_env("REPORTE_SEMANAL_DIA"), obtener_env("REPORTE_SEMANAL_HORA")
+        )
+
+        def _tarea_semanal():
+            reporte_semanal.enviar_reporte_semana_anterior(pedidos, ahora=reloj(), **envio_reporte)
+
+        def _tarea_recuperacion():
+            reporte_semanal.recuperar_reporte_pendiente(
+                pedidos, reloj(), dia, hora, minuto, **envio_reporte
+            )
+
+        logger.info(
+            "Reporte semanal automático programado (dia=%d, hora=%02d:%02d, hora de Bogotá).",
+            dia, hora, minuto,
+        )
+        return reporte_semanal.iniciar_programador(_tarea_semanal, _tarea_recuperacion, dia, hora, minuto)
+
+    app.extensions["iniciar_reporte_semanal"] = _iniciar_reporte_semanal
 
     @app.after_request
     def _registrar_peticion(respuesta):
@@ -323,6 +375,16 @@ def crear_app(
         errores = estado.get("errors") or []
         codigo = errores[0].get("code") if errores else None
         titulo = errores[0].get("title") if errores else None
+        semana_reporte = pedidos.semana_reporte_por_wamid(wamid) if wamid else None
+        if semana_reporte is not None:
+            # Reporte semanal automático no entregado (p. ej. texto libre con la
+            # ventana de 24 horas cerrada): solo informativo, asociado al reporte.
+            logger.info(
+                "El reporte semanal %s no se entregó al dueño (codigo=%s, titulo=%s, destino=%s).",
+                semana_reporte, codigo, titulo, numero_enmascarado,
+            )
+            return
+
         info = pedidos.info_aviso_dueno_por_wamid(wamid) if wamid else None
 
         if info is not None and info["tipo"] == "comprobante":
@@ -407,6 +469,12 @@ def crear_app(
             mensaje.get("text", {}).get("body")
         ):
             _enviar_lista_pedidos_activos(1)
+            return
+
+        if mensaje.get("type") == "text" and reporte_semanal.es_palabra_clave_reporte(
+            mensaje.get("text", {}).get("body")
+        ):
+            enviar_texto_fn(numero_dueno, reporte_semanal.texto_semana_en_curso(pedidos, ahora))
             return
 
         interactivo = mensaje.get("interactive", {}) if mensaje.get("type") == "interactive" else {}

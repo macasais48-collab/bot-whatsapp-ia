@@ -6,3 +6,4 @@ requests==2.34.2
 holidays==0.106
 tzdata==2026.5
 gunicorn==26.2.0
+apscheduler==3.11.2

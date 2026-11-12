@@ -36,6 +36,7 @@ COPY --chown=appuser:appuser \
     recursos_panaderia.json \
     recursos_tamales.json \
     red_meta.py \
+    reporte_semanal.py \
     telefono.py \
     webhook.py \
     whatsapp.py \

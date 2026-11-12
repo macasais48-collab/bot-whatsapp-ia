@@ -105,6 +105,18 @@ class Pedidos:
                 )
                 """
             )
+            # Sub-fase 5c: una fila por semana reportada (clave ISO, p. ej.
+            # "2026-W45"). La clave primaria garantiza que la misma semana nunca
+            # se envíe dos veces, aunque algún día haya más de un worker.
+            conexion.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reportes_enviados (
+                    semana TEXT PRIMARY KEY,
+                    enviado_en REAL NOT NULL,
+                    wamid TEXT
+                )
+                """
+            )
 
         ejecutar(self._ruta_bd, _crear)
 
@@ -466,6 +478,91 @@ class Pedidos:
                 (ESTADO_PAGO_PENDIENTE, "pago_pendiente", ahora, pedido_id),
             ),
         )
+
+    def datos_para_reporte(self, desde: float, hasta: float) -> dict:
+        """Solo lo necesario para el reporte semanal, con columnas explícitas
+        (nunca SELECT *): total, método de pago, forma de entrega y estado de
+        entrega de cada pedido confirmado, y nombre/cantidad de los productos.
+        Nunca teléfono, dirección, ubicación ni nada que identifique al cliente.
+        La semana se cuenta por la fecha de creación del pedido [desde, hasta)."""
+        marcadores = ", ".join("?" for _ in ESTADOS_CONFIRMADOS)
+        parametros = (*ESTADOS_CONFIRMADOS, desde, hasta)
+
+        def _consultar(conexion):
+            pedidos = conexion.execute(
+                f"""
+                SELECT total, metodo_pago, tipo_entrega, estado_entrega
+                FROM pedidos
+                WHERE estado IN ({marcadores}) AND creado_en >= ? AND creado_en < ?
+                """,
+                parametros,
+            ).fetchall()
+            productos = conexion.execute(
+                f"""
+                SELECT pedido_items.nombre, SUM(pedido_items.cantidad) AS cantidad_total
+                FROM pedido_items
+                JOIN pedidos ON pedidos.id = pedido_items.pedido_id
+                WHERE pedidos.estado IN ({marcadores})
+                  AND pedidos.creado_en >= ? AND pedidos.creado_en < ?
+                GROUP BY pedido_items.nombre
+                ORDER BY cantidad_total DESC, pedido_items.nombre ASC
+                """,
+                parametros,
+            ).fetchall()
+            return pedidos, productos
+
+        pedidos, productos = ejecutar(self._ruta_bd, _consultar)
+        return {
+            "pedidos": [
+                {"total": total, "metodo_pago": metodo_pago, "tipo_entrega": tipo_entrega, "estado_entrega": estado_entrega}
+                for total, metodo_pago, tipo_entrega, estado_entrega in pedidos
+            ],
+            "productos": [(nombre, cantidad) for nombre, cantidad in productos],
+        }
+
+    def reservar_reporte(self, semana: str, ahora: float) -> bool:
+        # Reserva atómica ANTES de enviar: si ya existe la fila (enviado o en
+        # curso), no se inserta nada y devuelve False — nunca dos envíos.
+        return ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "INSERT OR IGNORE INTO reportes_enviados (semana, enviado_en) VALUES (?, ?)",
+                (semana, ahora),
+            ).rowcount,
+        ) == 1
+
+    def fijar_wamid_reporte(self, semana: str, wamid: str) -> None:
+        ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "UPDATE reportes_enviados SET wamid = ? WHERE semana = ?", (wamid, semana)
+            ),
+        )
+
+    def liberar_reporte(self, semana: str) -> None:
+        # El envío falló antes de que Meta lo aceptara: se libera la reserva
+        # para que se reintente (al próximo arranque o a la próxima hora).
+        ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute("DELETE FROM reportes_enviados WHERE semana = ?", (semana,)),
+        )
+
+    def reporte_enviado(self, semana: str) -> bool:
+        return ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "SELECT 1 FROM reportes_enviados WHERE semana = ?", (semana,)
+            ).fetchone(),
+        ) is not None
+
+    def semana_reporte_por_wamid(self, wamid: str) -> str | None:
+        fila = ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "SELECT semana FROM reportes_enviados WHERE wamid = ?", (wamid,)
+            ).fetchone(),
+        )
+        return fila[0] if fila is not None else None
 
     def registrar_wamid_aviso_dueno(self, wamid: str, pedido_id: int, tipo: str, ahora: float) -> None:
         # Sin contenido ni datos personales: solo el id de mensaje (una cadena

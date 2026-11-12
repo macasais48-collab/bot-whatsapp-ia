@@ -70,11 +70,17 @@ MENSAJE_CLIENTE = {
 }
 
 
-def es_palabra_clave_pedidos(texto: str | None) -> bool:
+def normalizar_palabra(texto: str | None) -> str:
+    # Minúsculas y sin tildes, para comparar contra palabras clave exactas
+    # (también la usa reporte_semanal.py para "reporte").
     if not texto:
-        return False
+        return ""
     sin_tildes = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii")
-    return sin_tildes.strip().lower() in PALABRAS_CLAVE_PEDIDOS
+    return sin_tildes.strip().lower()
+
+
+def es_palabra_clave_pedidos(texto: str | None) -> bool:
+    return normalizar_palabra(texto) in PALABRAS_CLAVE_PEDIDOS
 
 
 def _tipo_entrega(pedido: dict) -> str:

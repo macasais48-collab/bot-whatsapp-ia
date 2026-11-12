@@ -20,7 +20,20 @@ VARIABLES_ESPERADAS = [
     "PLANTILLA_AVISO_DUENO_IDIOMA",
     "PLANTILLA_AVISO_PEDIDO_NUEVO_NOMBRE",
     "PLANTILLA_AVISO_PEDIDO_NUEVO_IDIOMA",
+    "REPORTE_SEMANAL_DIA",
+    "REPORTE_SEMANAL_HORA",
+    "PLANTILLA_REPORTE_SEMANAL_NOMBRE",
+    "PLANTILLA_REPORTE_SEMANAL_IDIOMA",
 ]
+
+# Vacías es un estado válido: el bot usa su comportamiento por defecto (lunes
+# 8:00 para el reporte; mensaje libre si no hay plantilla).
+VARIABLES_OPCIONALES = {
+    "REPORTE_SEMANAL_DIA",
+    "REPORTE_SEMANAL_HORA",
+    "PLANTILLA_REPORTE_SEMANAL_NOMBRE",
+    "PLANTILLA_REPORTE_SEMANAL_IDIOMA",
+}
 
 
 def generar_reporte(valores: dict) -> str:
@@ -28,7 +41,8 @@ def generar_reporte(valores: dict) -> str:
     for nombre in VARIABLES_ESPERADAS:
         valor = (valores.get(nombre) or "").strip()
         if not valor:
-            lineas.append(f"{nombre}: VACÍO")
+            sufijo = " (opcional)" if nombre in VARIABLES_OPCIONALES else ""
+            lineas.append(f"{nombre}: VACÍO{sufijo}")
             continue
         estado = "con valor"
         if nombre == "NUMERO_DUENO" and not numero_parece_valido(normalizar_numero(valor)):
