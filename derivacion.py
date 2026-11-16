@@ -27,6 +27,22 @@ VENTANA_ANTIRREPETICION_SEGUNDOS = 30 * 60
 RESUMEN_NO_DISPONIBLE = "Sin resumen disponible; contacte al cliente para saber qué necesita."
 
 
+# -- Resúmenes armados por código (sub-fase 6b): derivaciones del flujo de pedido
+# que no pasan por la IA. Una línea clara para el dueño, con el número de pedido
+# cuando existe. avisar_derivacion los sanea y recorta igual que los de la IA.
+
+
+def resumen_pide_asesor(pedido_id: int | None = None, detalle: str | None = None) -> str:
+    if pedido_id is None:
+        return "El cliente pidió hablar con un asesor."
+    texto = f"El cliente pidió hablar con un asesor durante el pedido #{pedido_id}"
+    return f"{texto}; {detalle}." if detalle else f"{texto}."
+
+
+def resumen_cancelar_en_verificacion(pedido_id: int) -> str:
+    return f"El cliente pidió cancelar mientras se verificaba el pago del pedido #{pedido_id}."
+
+
 def resumen_para_aviso(resumen: str | None) -> str:
     """Una sola línea apta para variable de plantilla (sin saltos de línea,
     tabulaciones ni 4+ espacios), máximo LIMITE_RESUMEN caracteres; nunca vacía."""

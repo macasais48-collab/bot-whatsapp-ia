@@ -234,6 +234,9 @@ def crear_app(
         plantilla_aviso_dueno_idioma=plantilla_aviso_dueno_idioma,
         plantilla_aviso_pedido_nuevo_nombre=plantilla_aviso_pedido_nuevo_nombre,
         plantilla_aviso_pedido_nuevo_idioma=plantilla_aviso_pedido_nuevo_idioma,
+        enviar_texto_con_wamid_fn=enviar_texto_con_wamid_fn,
+        plantilla_aviso_derivacion_nombre=plantilla_aviso_derivacion_nombre,
+        plantilla_aviso_derivacion_idioma=plantilla_aviso_derivacion_idioma,
     )
 
     # -- Reporte semanal automático (sub-fase 5c) --

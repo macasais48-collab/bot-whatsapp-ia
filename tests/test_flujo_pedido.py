@@ -1091,3 +1091,188 @@ def test_confirmar_en_efectivo_sin_plantilla_de_pedido_nuevo_usa_texto_libre(tmp
 
     llamada_dueno = next(l for l in texto.llamadas if l[0] == numero_dueno)
     assert numero in llamada_dueno[1]  # teléfono completo también en el mensaje libre
+
+
+# -- Sub-fase 6b: aviso al dueño en las derivaciones que no pasan por la IA --
+
+import derivacion  # noqa: E402
+from flujo_pedido import MENSAJE_CANCELAR_NO_DISPONIBLE_EN_VERIFICACION  # noqa: E402
+
+NUMERO_CLIENTE_6B = "573001112233"
+NUMERO_DUENO_6B = "573005554433"
+
+
+class EnviosTextoConWamid:
+    def __init__(self):
+        self.llamadas = []
+
+    def __call__(self, numero, texto):
+        self.llamadas.append((numero, texto))
+        return True, f"wamid-derivacion-{len(self.llamadas)}"
+
+
+def _crear_flujo_derivacion(tmp_path, con_plantilla=False, numero_dueno=NUMERO_DUENO_6B, reloj=lambda: 1000.0):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    texto, botones, lista = EnviosTexto(), EnviosBotones(), EnviosLista()
+    con_wamid, plantilla = EnviosTextoConWamid(), EnviosPlantilla(wamid="wamid-plantilla-derivacion")
+    flujo = FlujoPedido(
+        pedidos=pedidos,
+        catalogo=CATALOGO,
+        domicilio=DOMICILIO,
+        mensaje_derivacion=MENSAJE_DERIVACION,
+        enviar_texto_fn=texto,
+        enviar_botones_fn=botones,
+        enviar_lista_fn=lista,
+        reloj=reloj,
+        numero_dueno=numero_dueno,
+        enviar_imagen_fn=EnviosImagen(),
+        obtener_media_id_fn=ObtenerMediaIdFalso(),
+        reenviar_media_fn=ReenviarMediaFalso(),
+        imagen_qr=IMAGEN_QR,
+        enviar_plantilla_fn=plantilla,
+        enviar_texto_con_wamid_fn=con_wamid,
+        plantilla_aviso_derivacion_nombre="plantilla_de_prueba" if con_plantilla else None,
+        plantilla_aviso_derivacion_idioma="es" if con_plantilla else None,
+    )
+    return flujo, pedidos, texto, con_wamid, plantilla
+
+
+def _avisos_derivacion_por_plantilla(plantilla):
+    return [l for l in plantilla.llamadas if l[1] == "plantilla_de_prueba"]
+
+
+def _hasta_pago_por_verificar(flujo):
+    _avanzar_hasta_metodo_pago(flujo, NUMERO_CLIENTE_6B, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_boton("pago_qr"))
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_imagen())
+
+
+def test_6b_asesor_en_construccion_sin_plantilla_avisa_por_texto_libre(tmp_path):
+    flujo, pedidos, texto, con_wamid, plantilla = _crear_flujo_derivacion(tmp_path)
+    flujo.iniciar(NUMERO_CLIENTE_6B, "tamales", _mensaje_lista("tamal_sencillo"))
+
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_texto("asesor"))
+
+    assert texto.llamadas[-1] == (NUMERO_CLIENTE_6B, MENSAJE_DERIVACION)  # el cliente ve lo mismo de antes
+    assert pedidos.obtener_en_construccion(NUMERO_CLIENTE_6B) is None
+    assert len(con_wamid.llamadas) == 1
+    destino, cuerpo = con_wamid.llamadas[0]
+    assert destino == NUMERO_DUENO_6B
+    assert NUMERO_CLIENTE_6B in cuerpo
+    assert "El cliente pidió hablar con un asesor durante el pedido #1; el pedido en construcción se canceló." in cuerpo
+    assert _avisos_derivacion_por_plantilla(plantilla) == []
+    assert pedidos.cliente_derivacion_por_wamid("wamid-derivacion-1") == NUMERO_CLIENTE_6B
+
+
+def test_6b_asesor_en_pago_pendiente_con_plantilla(tmp_path):
+    flujo, pedidos, texto, con_wamid, plantilla = _crear_flujo_derivacion(tmp_path, con_plantilla=True)
+    _avanzar_hasta_metodo_pago(flujo, NUMERO_CLIENTE_6B, tipo_entrega="recoger_local")
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_boton("pago_qr"))
+
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_texto("Asesor"))
+
+    assert texto.llamadas[-1] == (NUMERO_CLIENTE_6B, MENSAJE_DERIVACION)
+    assert pedidos.obtener_activo(NUMERO_CLIENTE_6B)["estado"] == "pago_pendiente"
+    assert con_wamid.llamadas == []
+    assert _avisos_derivacion_por_plantilla(plantilla) == [
+        (
+            NUMERO_DUENO_6B, "plantilla_de_prueba", "es",
+            [NUMERO_CLIENTE_6B, "El cliente pidió hablar con un asesor durante el pedido #1; el pago está pendiente."],
+            None,
+        )
+    ]
+    assert pedidos.cliente_derivacion_por_wamid("wamid-plantilla-derivacion") == NUMERO_CLIENTE_6B
+
+
+def test_6b_asesor_en_pago_por_verificar_sin_plantilla(tmp_path):
+    flujo, pedidos, texto, con_wamid, plantilla = _crear_flujo_derivacion(tmp_path)
+    _hasta_pago_por_verificar(flujo)
+
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_texto("hablar con alguien"))
+
+    assert texto.llamadas[-1] == (NUMERO_CLIENTE_6B, MENSAJE_DERIVACION)
+    assert pedidos.obtener_activo(NUMERO_CLIENTE_6B)["estado"] == "pago_por_verificar"
+    assert len(con_wamid.llamadas) == 1
+    assert "durante el pedido #1; el pago está en verificación." in con_wamid.llamadas[0][1]
+
+
+def test_6b_cancelar_escrito_en_pago_por_verificar_con_plantilla(tmp_path):
+    flujo, pedidos, texto, con_wamid, plantilla = _crear_flujo_derivacion(tmp_path, con_plantilla=True)
+    _hasta_pago_por_verificar(flujo)
+
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_texto("cancelar"))
+
+    assert texto.llamadas[-1] == (
+        NUMERO_CLIENTE_6B, MENSAJE_CANCELAR_NO_DISPONIBLE_EN_VERIFICACION + MENSAJE_DERIVACION
+    )
+    assert pedidos.obtener_activo(NUMERO_CLIENTE_6B)["estado"] == "pago_por_verificar"
+    avisos = _avisos_derivacion_por_plantilla(plantilla)
+    assert len(avisos) == 1
+    assert avisos[0][3] == [
+        NUMERO_CLIENTE_6B, "El cliente pidió cancelar mientras se verificaba el pago del pedido #1."
+    ]
+
+
+def test_6b_boton_cancelar_en_pago_por_verificar_sin_plantilla(tmp_path):
+    flujo, pedidos, texto, con_wamid, plantilla = _crear_flujo_derivacion(tmp_path)
+    _hasta_pago_por_verificar(flujo)
+
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_boton("cancelar"))
+
+    assert texto.llamadas[-1] == (
+        NUMERO_CLIENTE_6B, MENSAJE_CANCELAR_NO_DISPONIBLE_EN_VERIFICACION + MENSAJE_DERIVACION
+    )
+    assert len(con_wamid.llamadas) == 1
+    assert "El cliente pidió cancelar mientras se verificaba el pago del pedido #1." in con_wamid.llamadas[0][1]
+
+
+def test_6b_antirrepeticion_compartida_con_las_derivaciones_de_la_ia(tmp_path):
+    flujo, pedidos, texto, con_wamid, plantilla = _crear_flujo_derivacion(tmp_path)
+    # Un aviso de la 6a (derivación de la IA) para este cliente, hace un minuto.
+    aviso_ia = EnviosTextoConWamid()
+    assert derivacion.avisar_derivacion(
+        pedidos, NUMERO_DUENO_6B, NUMERO_CLIENTE_6B, "Resumen de la IA", 940.0, aviso_ia
+    )
+    _hasta_pago_por_verificar(flujo)
+
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_texto("asesor"))
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_texto("cancelar"))
+
+    # El cliente recibe sus mensajes de siempre; el dueño no recibe ningún aviso más.
+    assert texto.llamadas[-2] == (NUMERO_CLIENTE_6B, MENSAJE_DERIVACION)
+    assert con_wamid.llamadas == []
+
+
+def test_6b_rutas_de_derivacion_comparten_la_antirrepeticion_entre_si(tmp_path):
+    flujo, pedidos, texto, con_wamid, plantilla = _crear_flujo_derivacion(tmp_path)
+    _hasta_pago_por_verificar(flujo)
+
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_texto("asesor"))
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_boton("cancelar"))
+
+    assert len(con_wamid.llamadas) == 1
+
+
+def test_6b_sin_numero_dueno_no_avisa_y_el_cliente_ve_lo_mismo(tmp_path):
+    flujo, pedidos, texto, con_wamid, plantilla = _crear_flujo_derivacion(tmp_path, numero_dueno=None)
+    flujo.iniciar(NUMERO_CLIENTE_6B, "tamales", _mensaje_lista("tamal_sencillo"))
+
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_texto("asesor"))
+
+    assert texto.llamadas[-1] == (NUMERO_CLIENTE_6B, MENSAJE_DERIVACION)
+    assert con_wamid.llamadas == []
+
+
+def test_6b_logs_sin_telefono_completo_ni_resumen(tmp_path, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    flujo, pedidos, texto, con_wamid, plantilla = _crear_flujo_derivacion(tmp_path)
+    _hasta_pago_por_verificar(flujo)
+
+    flujo.manejar_mensaje(NUMERO_CLIENTE_6B, _mensaje_texto("cancelar"))
+
+    mensajes = "\n".join(r.getMessage() for r in caplog.records)
+    assert "Aviso de derivación enviado al dueño" in mensajes
+    assert NUMERO_CLIENTE_6B not in mensajes
+    assert "mientras se verificaba" not in mensajes

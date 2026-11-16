@@ -40,6 +40,23 @@ def test_resumen_largo_se_recorta_a_300_caracteres():
     assert resumen.endswith("…")
 
 
+def test_resumenes_armados_por_codigo_con_y_sin_numero_de_pedido():
+    assert derivacion.resumen_pide_asesor() == "El cliente pidió hablar con un asesor."
+    assert derivacion.resumen_pide_asesor(28) == "El cliente pidió hablar con un asesor durante el pedido #28."
+    assert (
+        derivacion.resumen_pide_asesor(28, "el pago está pendiente")
+        == "El cliente pidió hablar con un asesor durante el pedido #28; el pago está pendiente."
+    )
+    assert (
+        derivacion.resumen_cancelar_en_verificacion(28)
+        == "El cliente pidió cancelar mientras se verificaba el pago del pedido #28."
+    )
+    # Ya vienen en una sola línea y dentro del límite: el saneado no los cambia.
+    for resumen in (derivacion.resumen_pide_asesor(28, "el pedido en construcción se canceló"),
+                    derivacion.resumen_cancelar_en_verificacion(28)):
+        assert resumen_para_aviso(resumen) == resumen
+
+
 def test_resumen_vacio_usa_el_texto_fijo():
     assert resumen_para_aviso("") == RESUMEN_NO_DISPONIBLE
     assert resumen_para_aviso(None) == RESUMEN_NO_DISPONIBLE

@@ -1800,6 +1800,47 @@ def test_derivar_registra_el_telefono_enmascarado_y_nunca_el_resumen(
     assert "mascota" not in mensajes
 
 
+def test_6b_asesor_dentro_de_un_pedido_avisa_al_dueno_por_la_plantilla_de_derivacion(
+    fabrica_cliente, envios, envios_con_wamid, tmp_path
+):
+    # Cableado de punta a punta: crear_app pasa al flujo de pedido la misma
+    # función, plantilla y registro de wamid de la sub-fase 6a.
+    llamadas_plantilla = []
+
+    def plantilla_falsa(numero, nombre, idioma, parametros, botones=None):
+        llamadas_plantilla.append((numero, nombre, idioma, parametros))
+        return True, "wamid.plantilla-6b"
+
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    cliente = fabrica_cliente(
+        ruta_recursos=PERFILES_NEGOCIO["tamales"].parent / "recursos_tamales.json",
+        pedidos=pedidos,
+        numero_dueno=NUMERO_DUENO_DE_PRUEBA,
+        enviar_plantilla_fn=plantilla_falsa,
+        plantilla_aviso_derivacion_nombre="plantilla_de_prueba",
+        plantilla_aviso_derivacion_idioma="es",
+    )
+    eleccion = {"type": "interactive", "interactive": {"type": "list_reply", "list_reply": {"id": "tamal_sencillo", "title": "x"}}}
+    _post_con_firma(cliente, _payload_mensaje("wamid.p1", NUMERO_CLIENTE_DERIVACION, eleccion))
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.p2", NUMERO_CLIENTE_DERIVACION, "asesor"))
+
+    assert envios.llamadas[-1] == (NUMERO_CLIENTE_DERIVACION, MENSAJE_DERIVACION_POR_DEFECTO)
+    assert envios_con_wamid.llamadas == []
+    pedido_id = pedidos.obtener(1)["id"]
+    assert llamadas_plantilla == [
+        (
+            NUMERO_DUENO_DE_PRUEBA, "plantilla_de_prueba", "es",
+            [
+                NUMERO_CLIENTE_DERIVACION,
+                f"El cliente pidió hablar con un asesor durante el pedido #{pedido_id}; "
+                "el pedido en construcción se canceló.",
+            ],
+        )
+    ]
+    assert pedidos.cliente_derivacion_por_wamid("wamid.plantilla-6b") == NUMERO_CLIENTE_DERIVACION
+
+
 def test_status_failed_131047_del_aviso_de_derivacion_es_informativo(fabrica_cliente, caplog, tmp_path):
     pedidos = Pedidos(tmp_path / "pedidos.db")
     pedidos.reservar_aviso_derivacion(NUMERO_CLIENTE_DERIVACION, 1000.0, 1800)

@@ -2,6 +2,7 @@ import logging
 import time
 import unicodedata
 
+import derivacion
 from pago_pedido import PREFIJO_BOTON_PAGO_NO_LLEGO, PREFIJO_BOTON_PAGO_RECIBIDO, avisar_pedido_nuevo
 from pedido_resumen import construir_resumen as _construir_resumen
 from pedido_resumen import formatear_pesos as _formatear_pesos
@@ -124,6 +125,9 @@ class FlujoPedido:
         plantilla_aviso_dueno_idioma: str | None = None,
         plantilla_aviso_pedido_nuevo_nombre: str | None = None,
         plantilla_aviso_pedido_nuevo_idioma: str | None = None,
+        enviar_texto_con_wamid_fn=None,
+        plantilla_aviso_derivacion_nombre: str | None = None,
+        plantilla_aviso_derivacion_idioma: str | None = None,
     ) -> None:
         self._pedidos = pedidos
         self._catalogo = catalogo
@@ -144,6 +148,9 @@ class FlujoPedido:
         self._plantilla_aviso_dueno_idioma = plantilla_aviso_dueno_idioma
         self._plantilla_aviso_pedido_nuevo_nombre = plantilla_aviso_pedido_nuevo_nombre
         self._plantilla_aviso_pedido_nuevo_idioma = plantilla_aviso_pedido_nuevo_idioma
+        self._enviar_texto_con_wamid_fn = enviar_texto_con_wamid_fn
+        self._plantilla_aviso_derivacion_nombre = plantilla_aviso_derivacion_nombre
+        self._plantilla_aviso_derivacion_idioma = plantilla_aviso_derivacion_idioma
         self._manejadores = {
             "producto": self._manejar_producto,
             "cantidad": self._manejar_cantidad,
@@ -369,13 +376,34 @@ class FlujoPedido:
                     wamid_comprobante, pedido["id"], "comprobante", ahora
                 )
 
-    def _derivar_sin_cancelar(self, numero: str, pedido: dict, ahora: float, texto: str) -> None:
+    def _avisar_derivacion(self, numero: str, resumen: str, ahora: float) -> None:
+        # Sub-fase 6b: mismo aviso, plantilla, antirrepetición y registro del
+        # wamid que las derivaciones de la IA (sub-fase 6a) — ver derivacion.py.
+        # Siempre DESPUÉS del mensaje al cliente, que no cambia.
+        if self._enviar_texto_con_wamid_fn is None:
+            return
+        derivacion.avisar_derivacion(
+            self._pedidos,
+            self._numero_dueno,
+            numero,
+            resumen,
+            ahora,
+            self._enviar_texto_con_wamid_fn,
+            enviar_plantilla_fn=self._enviar_plantilla_fn,
+            plantilla_nombre=self._plantilla_aviso_derivacion_nombre,
+            plantilla_idioma=self._plantilla_aviso_derivacion_idioma,
+        )
+
+    def _derivar_sin_cancelar(
+        self, numero: str, pedido: dict, ahora: float, texto: str, resumen: str
+    ) -> None:
         self._pedidos.tocar(pedido["id"], ahora)
         logger.info(
             "Pedido #%s derivado a una persona sin cancelar (estado=%s, remitente=%s)",
             pedido["id"], pedido["estado"], enmascarar_numero(numero),
         )
         self._enviar_texto(numero, texto)
+        self._avisar_derivacion(numero, resumen, ahora)
 
     def _reenviar_paso_actual(self, numero: str, pedido: dict) -> None:
         # Reenvía el MISMO interactivo del paso en el que está el pedido (los
@@ -439,6 +467,7 @@ class FlujoPedido:
                 self._derivar_sin_cancelar(
                     numero, pedido, ahora,
                     MENSAJE_CANCELAR_NO_DISPONIBLE_EN_VERIFICACION + self._mensaje_derivacion,
+                    derivacion.resumen_cancelar_en_verificacion(pedido["id"]),
                 )
             else:
                 self._pedidos.cancelar(pedido["id"], ahora)
@@ -450,7 +479,15 @@ class FlujoPedido:
 
         if texto_normalizado is not None and texto_normalizado in PALABRAS_CLAVE_PERSONA:
             if pedido["estado"] in ESTADOS_PAGO:
-                self._derivar_sin_cancelar(numero, pedido, ahora, self._mensaje_derivacion)
+                detalle = (
+                    "el pago está en verificación"
+                    if pedido["estado"] == ESTADO_PAGO_POR_VERIFICAR
+                    else "el pago está pendiente"
+                )
+                self._derivar_sin_cancelar(
+                    numero, pedido, ahora, self._mensaje_derivacion,
+                    derivacion.resumen_pide_asesor(pedido["id"], detalle),
+                )
             else:
                 self._pedidos.cancelar(pedido["id"], ahora)
                 logger.info(
@@ -458,6 +495,11 @@ class FlujoPedido:
                     pedido["id"], enmascarar_numero(numero),
                 )
                 self._enviar_texto(numero, self._mensaje_derivacion)
+                self._avisar_derivacion(
+                    numero,
+                    derivacion.resumen_pide_asesor(pedido["id"], "el pedido en construcción se canceló"),
+                    ahora,
+                )
             return
 
         if id_interactivo == ID_BOTON_CANCELAR:
@@ -465,6 +507,7 @@ class FlujoPedido:
                 self._derivar_sin_cancelar(
                     numero, pedido, ahora,
                     MENSAJE_CANCELAR_NO_DISPONIBLE_EN_VERIFICACION + self._mensaje_derivacion,
+                    derivacion.resumen_cancelar_en_verificacion(pedido["id"]),
                 )
             else:
                 self._pedidos.cancelar(pedido["id"], ahora)
