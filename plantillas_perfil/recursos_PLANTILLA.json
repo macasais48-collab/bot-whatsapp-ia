@@ -1,0 +1,56 @@
+{
+  "ubicacion": {
+    "latitud": 0.0,
+    "longitud": 0.0,
+    "nombre": "[NOMBRE DEL NEGOCIO] (EJEMPLO: reemplace latitud/longitud por las reales)",
+    "direccion": "[DIRECCIÓN EXACTA, barrio y municipio] (EJEMPLO)"
+  },
+  "enlaces": {
+    "mapa": {
+      "url": "https://www.google.com/maps?q=0.0,0.0",
+      "texto_boton": "Ver en Google Maps",
+      "descripcion": "Así puede ver nuestra ubicación en el mapa."
+    }
+  },
+  "imagenes": {
+    "qr_ejemplo": {
+      "descripcion": "Este es un QR de ejemplo para la demostración, no es un medio de pago real.",
+      "archivo": "qr_ejemplo.png"
+    }
+  },
+  "catalogo": {
+    "producto_ejemplo_1": {
+      "nombre": "[PRODUCTO 1] EJEMPLO",
+      "precio": 10000,
+      "unidad": "unidad"
+    },
+    "producto_ejemplo_2": {
+      "nombre": "[PRODUCTO 2] EJEMPLO",
+      "precio": 20000,
+      "unidad": "unidad"
+    }
+  },
+  "botones": {
+    "bienvenida": {
+      "descripcion": "¡Hola! Bienvenido a [NOMBRE DEL NEGOCIO]. ¿En qué le podemos ayudar?",
+      "opciones": [
+        {"id": "ver_menu", "titulo": "Ver productos", "equivale_a": "¿Qué productos venden?"},
+        {"id": "hacer_pedido", "titulo": "Hacer pedido", "equivale_a": "Quiero hacer un pedido"},
+        {"id": "ubicacion", "titulo": "Ubicación", "equivale_a": "¿Dónde quedan?"}
+      ]
+    }
+  },
+  "domicilio": {
+    "pedido_minimo": 15000,
+    "zona_ejemplo_1": {
+      "nombre": "[ZONA 1] EJEMPLO",
+      "costo": 3000,
+      "tiempo_estimado": "30-45 minutos"
+    },
+    "zona_ejemplo_2": {
+      "nombre": "[ZONA 2] EJEMPLO",
+      "costo": 5000,
+      "tiempo_estimado": "45-60 minutos"
+    }
+  }
+}
