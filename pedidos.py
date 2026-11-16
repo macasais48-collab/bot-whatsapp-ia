@@ -117,6 +117,18 @@ class Pedidos:
                 )
                 """
             )
+            # Sub-fase 6a: último aviso de derivación al dueño por cliente (para
+            # la antirrepetición de 30 minutos) y su wamid (para asociar un
+            # status "failed"). Sin resumen ni contenido: solo número, hora y wamid.
+            conexion.execute(
+                """
+                CREATE TABLE IF NOT EXISTS avisos_derivacion (
+                    numero_cliente TEXT PRIMARY KEY,
+                    enviado_en REAL NOT NULL,
+                    wamid TEXT
+                )
+                """
+            )
 
         ejecutar(self._ruta_bd, _crear)
 
@@ -588,3 +600,49 @@ class Pedidos:
         if fila is None:
             return None
         return {"pedido_id": fila[0], "tipo": fila[1]}
+
+    # -- Sub-fase 6a: aviso de derivación al dueño --
+
+    def reservar_aviso_derivacion(self, numero_cliente: str, ahora: float, ventana_segundos: float) -> bool:
+        # Reserva atómica en una sola sentencia: inserta la fila si el cliente
+        # no tiene ninguna, o la actualiza solo si el último aviso tiene al menos
+        # `ventana_segundos` de antigüedad. Si no cambió nada (rowcount 0), ya se
+        # avisó hace poco: no hay que volver a avisar.
+        return ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "INSERT INTO avisos_derivacion (numero_cliente, enviado_en) VALUES (?, ?) "
+                "ON CONFLICT(numero_cliente) DO UPDATE SET enviado_en = excluded.enviado_en "
+                "WHERE avisos_derivacion.enviado_en <= ?",
+                (numero_cliente, ahora, ahora - ventana_segundos),
+            ).rowcount,
+        ) == 1
+
+    def liberar_aviso_derivacion(self, numero_cliente: str, ahora: float) -> None:
+        # Si el envío falló, se borra la reserva hecha en `ahora` (y solo esa),
+        # para que la siguiente derivación de este cliente pueda volver a avisar.
+        ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "DELETE FROM avisos_derivacion WHERE numero_cliente = ? AND enviado_en = ?",
+                (numero_cliente, ahora),
+            ),
+        )
+
+    def fijar_wamid_aviso_derivacion(self, numero_cliente: str, wamid: str) -> None:
+        ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "UPDATE avisos_derivacion SET wamid = ? WHERE numero_cliente = ?",
+                (wamid, numero_cliente),
+            ),
+        )
+
+    def cliente_derivacion_por_wamid(self, wamid: str) -> str | None:
+        fila = ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "SELECT numero_cliente FROM avisos_derivacion WHERE wamid = ?", (wamid,)
+            ).fetchone(),
+        )
+        return fila[0] if fila is not None else None

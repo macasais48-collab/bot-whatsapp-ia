@@ -93,6 +93,14 @@ def test_variables_del_reporte_semanal_estan_y_se_marcan_como_opcionales():
     assert "WHATSAPP_TOKEN: VACÍO\n" in reporte + "\n"
 
 
+def test_variables_del_aviso_de_derivacion_estan_y_se_marcan_como_opcionales():
+    reporte = generar_reporte({"PLANTILLA_AVISO_DERIVACION_NOMBRE": "plantilla_de_prueba"})
+
+    assert "PLANTILLA_AVISO_DERIVACION_NOMBRE: con valor" in reporte
+    assert "plantilla_de_prueba" not in reporte
+    assert "PLANTILLA_AVISO_DERIVACION_IDIOMA: VACÍO (opcional)" in reporte
+
+
 def test_numero_dueno_con_mas_espacios_y_guiones_se_normaliza_antes_de_validar():
     reporte = generar_reporte({"NUMERO_DUENO": "+57 300 111 2233"})
 

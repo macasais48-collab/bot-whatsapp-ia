@@ -45,6 +45,10 @@ class Respuesta:
     texto: str
     derivar: bool
     adjuntos: list = field(default_factory=list)
+    # Sub-fase 6a: solo cuando derivar es True. Frase breve de la IA para el
+    # equipo del negocio (qué pide el cliente y los datos que dio). Nunca se
+    # envía al cliente ni se registra en el log; derivacion.py la sanea.
+    resumen_derivacion: str = ""
 
 
 class Cerebro:
@@ -130,6 +134,11 @@ class Cerebro:
             "'Le comparto una foto...' o 'Le comparto la ubicación...'), nunca preguntar si "
             "lo quiere ver — eso sería contradictorio, porque el adjunto se envía de todas "
             "formas en el mismo momento.\n\n"
+            "Cuando 'derivar' sea true, agrega también el campo 'resumen_derivacion': una "
+            "sola frase breve (máximo 300 caracteres) para el equipo del negocio, con lo que "
+            "pide el cliente y los datos que él mismo dio en la conversación, sin inventar "
+            "nada y sin incluir su número de teléfono. Ese resumen no lo ve el cliente. "
+            "Cuando 'derivar' sea false, omite ese campo.\n\n"
             "Información del negocio:\n"
             f"{info_negocio}"
         )
@@ -266,6 +275,7 @@ class Cerebro:
         respuesta_texto = MENSAJE_SEGURO
         derivar = True
         adjuntos_validos = []
+        resumen_derivacion = ""
 
         try:
             prompt_completo = self._prompt_base + "\n\n" + self._construir_contexto_fecha()
@@ -283,6 +293,9 @@ class Cerebro:
                 # _resolver_adjuntos nunca lanza: un adjunto inválido no puede
                 # invalidar la respuesta de texto que ya se validó arriba.
                 adjuntos_validos = self._resolver_adjuntos(datos.get("adjuntos", []))
+                candidato_resumen = datos.get("resumen_derivacion")
+                if derivar and isinstance(candidato_resumen, str):
+                    resumen_derivacion = candidato_resumen.strip()
         except Exception:
             # Límite del sistema: JSON inválido, claves faltantes o fallo de la API
             # externa. En cualquiera de esos casos se usa el mensaje seguro.
@@ -291,4 +304,9 @@ class Cerebro:
         self._historial.agregar(id_conversacion, "user", texto)
         self._historial.agregar(id_conversacion, "assistant", respuesta_texto)
 
-        return Respuesta(texto=respuesta_texto, derivar=derivar, adjuntos=adjuntos_validos)
+        return Respuesta(
+            texto=respuesta_texto,
+            derivar=derivar,
+            adjuntos=adjuntos_validos,
+            resumen_derivacion=resumen_derivacion,
+        )

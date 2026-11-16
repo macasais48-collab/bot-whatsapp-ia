@@ -542,3 +542,64 @@ def test_una_clave_de_imagen_inventada_por_la_ia_nunca_se_envia_y_se_registra(tm
     assert respuesta.adjuntos == []
     mensajes = "\n".join(registro.getMessage() for registro in caplog.records)
     assert "catalogo_que_no_existe" in mensajes
+
+
+# -- Sub-fase 6a: resumen de derivación --
+
+
+def test_al_derivar_conserva_el_resumen_de_la_ia_sin_guardarlo_en_el_historial():
+    fake = FakeProveedor(
+        json.dumps(
+            {
+                "respuesta": "Le comunico con el equipo",
+                "derivar": True,
+                "resumen_derivacion": "  Quiere una cita para su mascota el martes.  ",
+            }
+        )
+    )
+    historial = HistorialMemoria()
+    cerebro = Cerebro(fake, historial)
+
+    respuesta = cerebro.responder("conv1", "Quiero una cita")
+
+    assert respuesta.derivar is True
+    assert respuesta.resumen_derivacion == "Quiere una cita para su mascota el martes."
+    contenidos = [m["content"] for m in historial.obtener("conv1", 10)]
+    assert all("cita para su mascota el martes" not in c for c in contenidos)
+
+
+def test_sin_derivar_el_resumen_se_ignora_aunque_la_ia_lo_mande():
+    fake = FakeProveedor(
+        json.dumps({"respuesta": "Abrimos a las 8", "derivar": False, "resumen_derivacion": "algo"})
+    )
+
+    respuesta = Cerebro(fake, HistorialMemoria()).responder("conv1", "hola")
+
+    assert respuesta.resumen_derivacion == ""
+
+
+@pytest.mark.parametrize("valor", [None, 123, ["lista"], {"a": 1}])
+def test_resumen_con_tipo_invalido_queda_vacio_sin_romper_la_respuesta(valor):
+    fake = FakeProveedor(json.dumps({"respuesta": "Le comunico", "derivar": True, "resumen_derivacion": valor}))
+
+    respuesta = Cerebro(fake, HistorialMemoria()).responder("conv1", "hola")
+
+    assert respuesta.texto == "Le comunico"
+    assert respuesta.derivar is True
+    assert respuesta.resumen_derivacion == ""
+
+
+def test_el_mensaje_seguro_deriva_sin_resumen():
+    respuesta = Cerebro(FakeProveedor("no es json"), HistorialMemoria()).responder("conv1", "hola")
+
+    assert respuesta.derivar is True
+    assert respuesta.resumen_derivacion == ""
+
+
+def test_el_prompt_pide_el_resumen_de_derivacion_sin_el_telefono():
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+    Cerebro(fake, HistorialMemoria()).responder("conv1", "hola")
+
+    sistema = fake.ultima_llamada[0]
+    assert "resumen_derivacion" in sistema
+    assert "sin incluir su número de teléfono" in sistema

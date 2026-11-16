@@ -6,6 +6,7 @@ from pathlib import Path
 
 from flask import Flask, Response, request
 
+import derivacion
 import estado_pedido
 import pago_pedido
 import perfiles_negocio
@@ -131,6 +132,8 @@ def crear_app(
     plantilla_aviso_pedido_nuevo_idioma: str | None = None,
     plantilla_reporte_semanal_nombre: str | None = None,
     plantilla_reporte_semanal_idioma: str | None = None,
+    plantilla_aviso_derivacion_nombre: str | None = None,
+    plantilla_aviso_derivacion_idioma: str | None = None,
     reloj=time.time,
 ) -> Flask:
     app = Flask(__name__)
@@ -182,6 +185,18 @@ def crear_app(
         )
         plantilla_reporte_semanal_nombre = None
         plantilla_reporte_semanal_idioma = None
+    if plantilla_aviso_derivacion_nombre is None:
+        plantilla_aviso_derivacion_nombre = obtener_env("PLANTILLA_AVISO_DERIVACION_NOMBRE") or None
+    if plantilla_aviso_derivacion_idioma is None:
+        plantilla_aviso_derivacion_idioma = obtener_env("PLANTILLA_AVISO_DERIVACION_IDIOMA") or None
+    if bool(plantilla_aviso_derivacion_nombre) != bool(plantilla_aviso_derivacion_idioma):
+        logger.warning(
+            "PLANTILLA_AVISO_DERIVACION_NOMBRE y PLANTILLA_AVISO_DERIVACION_IDIOMA deben "
+            "configurarse juntas; con solo una de las dos, el aviso de derivación usa el "
+            "mensaje libre."
+        )
+        plantilla_aviso_derivacion_nombre = None
+        plantilla_aviso_derivacion_idioma = None
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = perfiles_negocio.ruta_perfil_para_clave(perfil)
     if cerebro is None:
@@ -333,6 +348,20 @@ def crear_app(
         if respuesta.derivar:
             logger.info("Conversación derivada a una persona (remitente=%s)", numero_enmascarado)
             enviar_texto_fn(numero_remitente, mensaje_derivacion)
+            # Sub-fase 6a: el cliente ya recibió el mensaje fijo de siempre; ahora
+            # se avisa al negocio (máximo un aviso por cliente cada 30 minutos).
+            # El bot sigue respondiendo después de derivar, igual que antes.
+            derivacion.avisar_derivacion(
+                pedidos,
+                numero_dueno,
+                numero_remitente,
+                respuesta.resumen_derivacion,
+                reloj(),
+                enviar_texto_con_wamid_fn,
+                enviar_plantilla_fn=enviar_plantilla_fn,
+                plantilla_nombre=plantilla_aviso_derivacion_nombre,
+                plantilla_idioma=plantilla_aviso_derivacion_idioma,
+            )
             if respuesta.adjuntos:
                 # Al derivar, el texto que se envía es el mensaje fijo de derivación,
                 # no el de la IA: enviar un adjunto sin ese contexto sería confuso o
@@ -383,6 +412,26 @@ def crear_app(
                 "El reporte semanal %s no se entregó al dueño (codigo=%s, titulo=%s, destino=%s).",
                 semana_reporte, codigo, titulo, numero_enmascarado,
             )
+            return
+
+        cliente_derivacion = pedidos.cliente_derivacion_por_wamid(wamid) if wamid else None
+        if cliente_derivacion is not None:
+            # Aviso de derivación al dueño no entregado (sub-fase 6a). Con la
+            # ventana de 24 horas cerrada (texto libre sin plantilla) es un caso
+            # esperado: informativo. Cualquier otro código, advertencia.
+            cliente_enmascarado = enmascarar_numero(cliente_derivacion)
+            if codigo == CODIGO_ERROR_VENTANA_24H:
+                logger.info(
+                    "El aviso de derivación al dueño no se entregó (codigo=%s, ventana de 24 horas "
+                    "cerrada, destino=%s, cliente=%s).",
+                    codigo, numero_enmascarado, cliente_enmascarado,
+                )
+            else:
+                logger.warning(
+                    "El aviso de derivación al dueño no se entregó (codigo=%s, titulo=%s, destino=%s, "
+                    "cliente=%s).",
+                    codigo, titulo, numero_enmascarado, cliente_enmascarado,
+                )
             return
 
         info = pedidos.info_aviso_dueno_por_wamid(wamid) if wamid else None

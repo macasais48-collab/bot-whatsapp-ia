@@ -431,3 +431,36 @@ def test_listar_activos_entrega_con_limite_y_desplazamiento(tmp_path):
     assert [p["id"] for p in pedidos.listar_activos_entrega(0, 2)] == ids[:2]
     assert [p["id"] for p in pedidos.listar_activos_entrega(2, 2)] == ids[2:4]
     assert [p["id"] for p in pedidos.listar_activos_entrega(4, 2)] == ids[4:]
+
+
+# -- Sub-fase 6a: avisos de derivación --
+
+
+def test_reservar_aviso_derivacion_respeta_la_ventana_por_cliente(tmp_path):
+    pedidos = _crear_pedidos(tmp_path)
+
+    assert pedidos.reservar_aviso_derivacion("573001112233", 1000.0, 1800) is True
+    assert pedidos.reservar_aviso_derivacion("573001112233", 2799.0, 1800) is False
+    assert pedidos.reservar_aviso_derivacion("573009998877", 1001.0, 1800) is True
+    assert pedidos.reservar_aviso_derivacion("573001112233", 2800.0, 1800) is True
+
+
+def test_liberar_aviso_derivacion_solo_borra_la_reserva_de_ese_momento(tmp_path):
+    pedidos = _crear_pedidos(tmp_path)
+    pedidos.reservar_aviso_derivacion("573001112233", 1000.0, 1800)
+
+    pedidos.liberar_aviso_derivacion("573001112233", 999.0)
+    assert pedidos.reservar_aviso_derivacion("573001112233", 1100.0, 1800) is False
+
+    pedidos.liberar_aviso_derivacion("573001112233", 1000.0)
+    assert pedidos.reservar_aviso_derivacion("573001112233", 1100.0, 1800) is True
+
+
+def test_wamid_del_aviso_de_derivacion_se_asocia_al_cliente(tmp_path):
+    pedidos = _crear_pedidos(tmp_path)
+    pedidos.reservar_aviso_derivacion("573001112233", 1000.0, 1800)
+
+    pedidos.fijar_wamid_aviso_derivacion("573001112233", "wamid.derivacion")
+
+    assert pedidos.cliente_derivacion_por_wamid("wamid.derivacion") == "573001112233"
+    assert pedidos.cliente_derivacion_por_wamid("wamid.otro") is None

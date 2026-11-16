@@ -300,6 +300,8 @@ def fabrica_cliente(
         enviar_plantilla_fn=None,
         plantilla_aviso_pedido_nuevo_nombre=None,
         plantilla_aviso_pedido_nuevo_idioma=None,
+        plantilla_aviso_derivacion_nombre=None,
+        plantilla_aviso_derivacion_idioma=None,
     ):
         contador["n"] += 1
         historial_dedup = HistorialSQLite(tmp_path / f"prueba_{contador['n']}.db")
@@ -325,6 +327,8 @@ def fabrica_cliente(
             numero_dueno=numero_dueno,
             plantilla_aviso_pedido_nuevo_nombre=plantilla_aviso_pedido_nuevo_nombre,
             plantilla_aviso_pedido_nuevo_idioma=plantilla_aviso_pedido_nuevo_idioma,
+            plantilla_aviso_derivacion_nombre=plantilla_aviso_derivacion_nombre,
+            plantilla_aviso_derivacion_idioma=plantilla_aviso_derivacion_idioma,
             reloj=reloj or (lambda: RELOJ_PRUEBA_SEGUNDOS),
         )
         app.testing = True
@@ -1688,3 +1692,152 @@ def test_status_failed_del_reporte_semanal_es_informativo_y_asociado_a_la_semana
     assert "2026-W45" in informativos
     assert "desconocido" not in informativos
     assert NUMERO_DUENO_DE_PRUEBA not in informativos
+
+
+# -- Sub-fase 6a: aviso de derivación al dueño --
+
+NUMERO_CLIENTE_DERIVACION = "573001112233"
+SALIDA_IA_DERIVA = json.dumps(
+    {
+        "respuesta": "texto de la IA que el cliente no debe ver",
+        "derivar": True,
+        "resumen_derivacion": "Quiere una cita\npara su mascota el martes.",
+    }
+)
+
+
+def test_derivar_sin_plantilla_avisa_al_dueno_por_texto_libre_y_el_cliente_recibe_el_mensaje_fijo(
+    fabrica_cliente, envios, envios_con_wamid, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    cliente = fabrica_cliente(SALIDA_IA_DERIVA, pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.d1", NUMERO_CLIENTE_DERIVACION, "quiero una cita"))
+
+    # El cliente recibe exactamente lo mismo que antes de la sub-fase 6a.
+    assert envios.llamadas == [(NUMERO_CLIENTE_DERIVACION, MENSAJE_DERIVACION_POR_DEFECTO)]
+    assert len(envios_con_wamid.llamadas) == 1
+    destino, cuerpo = envios_con_wamid.llamadas[0]
+    assert destino == NUMERO_DUENO_DE_PRUEBA
+    assert NUMERO_CLIENTE_DERIVACION in cuerpo  # teléfono completo en el contenido
+    assert "Quiere una cita para su mascota el martes." in cuerpo
+    assert "texto de la IA" not in cuerpo
+    assert pedidos.cliente_derivacion_por_wamid("wamid.estado-1") == NUMERO_CLIENTE_DERIVACION
+
+
+def test_derivar_con_plantilla_avisa_al_dueno_por_plantilla(
+    fabrica_cliente, envios, envios_con_wamid, tmp_path
+):
+    llamadas_plantilla = []
+
+    def plantilla_falsa(numero, nombre, idioma, parametros, botones=None):
+        llamadas_plantilla.append((numero, nombre, idioma, parametros, botones))
+        return True, "wamid.plantilla-derivacion"
+
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    cliente = fabrica_cliente(
+        SALIDA_IA_DERIVA,
+        pedidos=pedidos,
+        numero_dueno=NUMERO_DUENO_DE_PRUEBA,
+        enviar_plantilla_fn=plantilla_falsa,
+        plantilla_aviso_derivacion_nombre="plantilla_de_prueba",
+        plantilla_aviso_derivacion_idioma="es",
+    )
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.d1", NUMERO_CLIENTE_DERIVACION, "quiero una cita"))
+
+    assert envios.llamadas == [(NUMERO_CLIENTE_DERIVACION, MENSAJE_DERIVACION_POR_DEFECTO)]
+    assert envios_con_wamid.llamadas == []
+    assert llamadas_plantilla == [
+        (
+            NUMERO_DUENO_DE_PRUEBA,
+            "plantilla_de_prueba",
+            "es",
+            [NUMERO_CLIENTE_DERIVACION, "Quiere una cita para su mascota el martes."],
+            None,
+        )
+    ]
+    assert pedidos.cliente_derivacion_por_wamid("wamid.plantilla-derivacion") == NUMERO_CLIENTE_DERIVACION
+
+
+def test_derivar_dos_veces_seguidas_avisa_al_dueno_una_sola_vez(
+    fabrica_cliente, envios, envios_con_wamid, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    cliente = fabrica_cliente(SALIDA_IA_DERIVA, pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.d1", NUMERO_CLIENTE_DERIVACION, "quiero una cita"))
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.d2", NUMERO_CLIENTE_DERIVACION, "¿me ayudan?"))
+
+    # El cliente recibe el mensaje fijo las dos veces; el dueño, un solo aviso.
+    assert envios.llamadas == [(NUMERO_CLIENTE_DERIVACION, MENSAJE_DERIVACION_POR_DEFECTO)] * 2
+    assert len(envios_con_wamid.llamadas) == 1
+
+
+def test_derivar_sin_numero_dueno_no_avisa_a_nadie(fabrica_cliente, envios, envios_con_wamid):
+    cliente = fabrica_cliente(SALIDA_IA_DERIVA)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.d1", NUMERO_CLIENTE_DERIVACION, "quiero una cita"))
+
+    assert envios.llamadas == [(NUMERO_CLIENTE_DERIVACION, MENSAJE_DERIVACION_POR_DEFECTO)]
+    assert envios_con_wamid.llamadas == []
+
+
+def test_derivar_registra_el_telefono_enmascarado_y_nunca_el_resumen(
+    fabrica_cliente, caplog, tmp_path
+):
+    cliente = fabrica_cliente(
+        SALIDA_IA_DERIVA, pedidos=Pedidos(tmp_path / "pedidos.db"), numero_dueno=NUMERO_DUENO_DE_PRUEBA
+    )
+    caplog.set_level(logging.INFO)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("wamid.d1", NUMERO_CLIENTE_DERIVACION, "quiero una cita"))
+
+    mensajes = "\n".join(r.getMessage() for r in caplog.records)
+    assert "Aviso de derivación enviado al dueño" in mensajes
+    assert NUMERO_CLIENTE_DERIVACION not in mensajes
+    assert NUMERO_DUENO_DE_PRUEBA not in mensajes
+    assert "mascota" not in mensajes
+
+
+def test_status_failed_131047_del_aviso_de_derivacion_es_informativo(fabrica_cliente, caplog, tmp_path):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedidos.reservar_aviso_derivacion(NUMERO_CLIENTE_DERIVACION, 1000.0, 1800)
+    pedidos.fijar_wamid_aviso_derivacion(NUMERO_CLIENTE_DERIVACION, "wamid.derivacion")
+    cliente = fabrica_cliente(pedidos=pedidos)
+    caplog.set_level(logging.INFO, logger="webhook")
+    payload = _payload_estado(
+        "wamid.derivacion", NUMERO_DUENO_DE_PRUEBA, status="failed",
+        errors=[{"code": 131047, "title": "Re-engagement message"}],
+    )
+
+    _post_con_firma(cliente, payload)
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+    informativos = "\n".join(r.getMessage() for r in caplog.records if r.levelno == logging.INFO)
+    assert "aviso de derivación" in informativos
+    assert "desconocido" not in informativos
+    assert NUMERO_CLIENTE_DERIVACION not in informativos
+    assert NUMERO_DUENO_DE_PRUEBA not in informativos
+
+
+def test_status_failed_con_otro_codigo_del_aviso_de_derivacion_es_advertencia(
+    fabrica_cliente, caplog, tmp_path
+):
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedidos.reservar_aviso_derivacion(NUMERO_CLIENTE_DERIVACION, 1000.0, 1800)
+    pedidos.fijar_wamid_aviso_derivacion(NUMERO_CLIENTE_DERIVACION, "wamid.derivacion")
+    cliente = fabrica_cliente(pedidos=pedidos)
+    caplog.set_level(logging.INFO, logger="webhook")
+    payload = _payload_estado(
+        "wamid.derivacion", NUMERO_DUENO_DE_PRUEBA, status="failed",
+        errors=[{"code": 131026, "title": "Message undeliverable"}],
+    )
+
+    _post_con_firma(cliente, payload)
+
+    advertencias = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(advertencias) == 1
+    assert "aviso de derivación" in advertencias[0]
+    assert "desconocido" not in advertencias[0]
+    assert NUMERO_CLIENTE_DERIVACION not in advertencias[0]
