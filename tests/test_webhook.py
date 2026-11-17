@@ -1761,7 +1761,7 @@ def test_derivar_con_plantilla_avisa_al_dueno_por_plantilla(
             NUMERO_DUENO_DE_PRUEBA,
             "plantilla_de_prueba",
             "es",
-            [NUMERO_CLIENTE_DERIVACION, "Quiere una cita para su mascota el martes."],
+            [NUMERO_CLIENTE_DERIVACION, "Quiere una cita para su mascota el martes"],  # sin punto final
             None,
         )
     ]
@@ -1842,7 +1842,7 @@ def test_6b_asesor_dentro_de_un_pedido_avisa_al_dueno_por_la_plantilla_de_deriva
             [
                 NUMERO_CLIENTE_DERIVACION,
                 f"El cliente pidió hablar con un asesor durante el pedido #{pedido_id}; "
-                "el pedido en construcción se canceló.",
+                "el pedido en construcción se canceló",
             ],
         )
     ]

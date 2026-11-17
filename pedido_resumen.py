@@ -29,6 +29,14 @@ def una_linea(texto: str, limite: int = LIMITE_UNA_LINEA_POR_DEFECTO) -> str:
     return _una_linea(texto, limite)
 
 
+def sin_punto_final(texto: str) -> str:
+    """Quita el punto (o puntos) final de un valor que va dentro de una
+    plantilla cuyo texto fijo ya pone un punto después de la variable
+    ("Fecha y hora: {{2}}."): sin esto, "8:00 a.m." o un resumen que termina
+    en punto saldrían con punto doble ("a.m..")."""
+    return texto.rstrip().rstrip(".").rstrip() or texto
+
+
 def construir_resumen(pedido: dict, domicilio: dict) -> tuple[str, int]:
     lineas = ["Resumen de su pedido:"]
     total = 0

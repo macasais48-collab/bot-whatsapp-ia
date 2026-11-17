@@ -218,7 +218,8 @@ def test_aviso_al_dueno_por_plantilla(tmp_path):
     assert e.plantilla.llamadas == [
         (
             DUENO, "plantilla_cita", "es",
-            [str(cita_id), "lunes 23 de noviembre, 8:00 a.m.",
+            # Sin el punto final: la plantilla pone el suyo ("Fecha y hora: {{2}}.").
+            [str(cita_id), "lunes 23 de noviembre, 8:00 a.m",
              "Nombre: Ana Prueba; Mascota: Toby, perro; Motivo: Vacunas", CLIENTE],
         )
     ]
@@ -536,6 +537,81 @@ def test_aplicar_retencion_usa_los_dias_del_perfil(tmp_path):
 )
 def test_hora_legible(inicio, esperado):
     assert flujo_cita.hora_legible(inicio) == esperado
+
+
+# -- Punto doble (arreglo del 17/11/2026: "2:00 p.m..") --
+
+RAIZ = __import__("pathlib").Path(__file__).parent.parent
+
+
+def _renderizar_cuerpo_de_plantilla(nombre_doc: str, parametros: list[str]) -> str:
+    """Arma el texto que vería el dueño con el cuerpo EXACTO de la plantilla
+    documentada en docs/ y los parámetros que envía el bot."""
+    import re
+
+    documento = (RAIZ / "docs" / nombre_doc).read_text(encoding="utf-8")
+    cuerpo = re.search(r"\| \*\*Cuerpo\*\* \| `([^`]+)` \|", documento).group(1)
+    for indice, valor in enumerate(parametros, start=1):
+        cuerpo = cuerpo.replace("{{%d}}" % indice, valor)
+    return cuerpo
+
+
+def test_confirmacion_al_cliente_sin_punto_doble(tmp_path):
+    e = Escenario(tmp_path)
+    e.fila("cita_dia_2026-11-23")
+    e.fila("cita_hora_2026-11-23_09:30")
+    e.boton("cita_acepto")
+    for valor in ("Ana Prueba", "Toby, perro", "Vacunas"):
+        e.escribir(valor)
+
+    e.boton("cita_confirmar")
+
+    confirmacion = e.texto.llamadas[-1][1]
+    assert "lunes 23 de noviembre, 9:30 a.m.\n" in confirmacion
+    assert ".." not in confirmacion
+
+
+def test_resumen_aviso_libre_lista_y_detalle_sin_punto_doble(tmp_path):
+    e = Escenario(tmp_path)
+    e.hasta_confirmacion()
+    resumen = e.botones.llamadas[-1][1]
+    cita_id = e.cita()["id"]
+    e.boton("cita_confirmar")
+
+    aviso_libre = e.con_wamid.llamadas[-1][1]
+    filas = flujo_cita.pagina_de_proximas_citas(e.citas, PERFIL, e.config, DOMINGO_NOCHE)[0]["filas"]
+    detalle = flujo_cita.detalle_cita_para_dueno(e.citas.obtener(cita_id), e.config)
+
+    for texto in (resumen, aviso_libre, detalle, str(filas)):
+        assert ".." not in texto
+
+
+def test_plantilla_de_cita_renderizada_no_tiene_punto_doble(tmp_path):
+    e = Escenario(tmp_path, con_plantilla=True)
+    e.fila("cita_dia_2026-11-23")
+    e.fila("cita_hora_2026-11-23_09:30")
+    e.boton("cita_acepto")
+    for valor in ("Ana Prueba.", "Toby, perro.", "Vacunas."):  # el cliente termina con punto
+        e.escribir(valor)
+
+    e.boton("cita_confirmar")
+
+    texto = _renderizar_cuerpo_de_plantilla("plantilla_aviso_cita.md", e.plantilla.llamadas[-1][3])
+    assert "Fecha y hora: lunes 23 de noviembre, 9:30 a.m. Datos de la cita:" in texto
+    assert ".." not in texto
+
+
+def test_plantilla_de_derivacion_renderizada_no_tiene_punto_doble(tmp_path):
+    e = Escenario(tmp_path)
+    e.flujo._plantilla_aviso_derivacion_nombre = "plantilla_derivacion"
+    e.flujo._plantilla_aviso_derivacion_idioma = "es"
+    e.fila("cita_dia_2026-11-23")
+
+    e.escribir("asesor")  # resumen: "...mientras agendaba una cita."
+
+    texto = _renderizar_cuerpo_de_plantilla("plantilla_aviso_derivacion.md", e.plantilla.llamadas[-1][3])
+    assert "mientras agendaba una cita. Por favor" in texto
+    assert ".." not in texto
 
 
 def test_dia_corto_y_largo():

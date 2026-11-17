@@ -16,7 +16,7 @@ un resumen breve de la solicitud, redactado por la IA.
 """
 import logging
 
-from pedido_resumen import una_linea
+from pedido_resumen import sin_punto_final, una_linea
 from pedidos import Pedidos
 from telefono import enmascarar_numero
 
@@ -86,8 +86,10 @@ def avisar_derivacion(
     resumen_saneado = resumen_para_aviso(resumen)
     if plantilla_nombre and plantilla_idioma and enviar_plantilla_fn is not None:
         canal = "plantilla"
+        # La plantilla ya pone un punto después del resumen ("...: {{2}}."):
+        # sin el punto final del resumen, para no duplicarlo.
         ok, wamid = enviar_plantilla_fn(
-            numero_dueno, plantilla_nombre, plantilla_idioma, [numero_cliente, resumen_saneado]
+            numero_dueno, plantilla_nombre, plantilla_idioma, [numero_cliente, sin_punto_final(resumen_saneado)]
         )
     else:
         canal = "texto libre"

@@ -1,6 +1,6 @@
 import logging
 
-from pedido_resumen import entrega_una_linea, formatear_pesos, resumen_productos_una_linea
+from pedido_resumen import entrega_una_linea, formatear_pesos, resumen_productos_una_linea, sin_punto_final
 from pedidos import ESTADO_PAGO_POR_VERIFICAR, Pedidos
 from telefono import enmascarar_numero
 
@@ -48,7 +48,9 @@ def avisar_pedido_nuevo(
                 str(pedido["id"]),
                 resumen_productos_una_linea(pedido),
                 formatear_pesos(pedido["total"]),
-                entrega_una_linea(pedido, domicilio),
+                # La dirección la escribe el cliente y puede terminar en punto;
+                # la plantilla ya pone uno después de la variable.
+                sin_punto_final(entrega_una_linea(pedido, domicilio)),
                 metodo_pago,
                 pedido["numero_cliente"],
             ],

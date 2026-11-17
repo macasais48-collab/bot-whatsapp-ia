@@ -34,7 +34,7 @@ from citas import (
     Citas,
 )
 from flujo_pedido import PALABRAS_CLAVE_CANCELAR, PALABRAS_CLAVE_PERSONA, SEGUNDOS_TIMEOUT_PEDIDO, _normalizar
-from pedido_resumen import una_linea
+from pedido_resumen import sin_punto_final, una_linea
 from pedidos import Pedidos
 from telefono import enmascarar_numero
 
@@ -103,7 +103,8 @@ MENSAJE_ENTRADA_NO_RECONOCIDA = (
 )
 MENSAJE_DATO_INVALIDO = "Por favor responda con un texto. {pregunta}"
 MENSAJE_CITA_CONFIRMADA = (
-    "¡Listo! Su cita #{id} quedó agendada para el {fecha_hora}.\n{datos}\n"
+    # Sin punto después de {fecha_hora}: la hora ya termina en "a.m."/"p.m.".
+    "¡Listo! Su cita #{id} quedó agendada para el {fecha_hora}\n{datos}\n"
     "Si necesita cambiarla o cancelarla, escriba *asesor* y una persona del equipo le ayudará."
 )
 
@@ -529,9 +530,11 @@ class FlujoCita:
         datos = datos_una_linea(self._config, cita["datos"])
         if self._plantilla_aviso_cita_nombre and self._plantilla_aviso_cita_idioma and self._enviar_plantilla_fn:
             canal = "plantilla"
+            # La plantilla pone un punto después de cada variable: sin el punto
+            # final de "a.m."/"p.m." ni el de un dato, para no duplicarlo.
             ok, wamid = self._enviar_plantilla_fn(
                 self._numero_dueno, self._plantilla_aviso_cita_nombre, self._plantilla_aviso_cita_idioma,
-                [str(cita["id"]), fecha_hora, datos, cita["numero_cliente"]],
+                [str(cita["id"]), sin_punto_final(fecha_hora), sin_punto_final(datos), cita["numero_cliente"]],
             )
         else:
             canal = "texto libre"

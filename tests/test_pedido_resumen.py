@@ -103,3 +103,37 @@ def test_entrega_una_linea_respeta_el_limite_de_longitud():
     resultado = entrega_una_linea(pedido, DOMICILIO, limite=50)
 
     assert len(resultado) == 50
+
+
+def test_sin_punto_final_evita_el_punto_doble_en_plantillas():
+    from pedido_resumen import sin_punto_final
+
+    assert sin_punto_final("martes 17 de noviembre, 2:00 p.m.") == "martes 17 de noviembre, 2:00 p.m"
+    assert sin_punto_final("Calle de prueba 1-23. ") == "Calle de prueba 1-23"
+    assert sin_punto_final("Termina en puntos...") == "Termina en puntos"
+    assert sin_punto_final("Sin punto") == "Sin punto"
+    assert sin_punto_final("$45.000") == "$45.000"
+    assert sin_punto_final(".") == "."  # nunca deja una variable vacía (Meta la rechazaría)
+
+
+def test_aviso_de_pedido_nuevo_por_plantilla_sin_punto_doble_en_la_entrega(tmp_path):
+    from pago_pedido import avisar_pedido_nuevo
+    from pedidos import Pedidos
+
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    llamadas = []
+    pedido = {
+        **_pedido(
+            items=[{"cantidad": 1, "nombre": "Producto A", "subtotal": 10000}],
+            tipo_entrega="domicilio", zona_domicilio="centro", direccion_texto="Calle de prueba 1-23.",
+        ),
+        "id": 7, "total": 13000, "metodo_pago": "efectivo", "numero_cliente": "573001112233",
+    }
+
+    avisar_pedido_nuevo(
+        pedidos, "573005554433", pedido, DOMICILIO, 1000.0, lambda *a: True,
+        enviar_plantilla_fn=lambda *a, **k: llamadas.append(a[3]) or (True, "wamid-x"),
+        plantilla_nombre="plantilla_de_prueba", plantilla_idioma="es",
+    )
+
+    assert llamadas[0][3] == "Domicilio - Centro, Calle de prueba 1-23"

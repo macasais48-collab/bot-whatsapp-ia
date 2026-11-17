@@ -1177,7 +1177,8 @@ def test_6b_asesor_en_pago_pendiente_con_plantilla(tmp_path):
     assert _avisos_derivacion_por_plantilla(plantilla) == [
         (
             NUMERO_DUENO_6B, "plantilla_de_prueba", "es",
-            [NUMERO_CLIENTE_6B, "El cliente pidió hablar con un asesor durante el pedido #1; el pago está pendiente."],
+            # Sin punto final: la plantilla pone el suyo después de {{2}}.
+            [NUMERO_CLIENTE_6B, "El cliente pidió hablar con un asesor durante el pedido #1; el pago está pendiente"],
             None,
         )
     ]
@@ -1209,7 +1210,7 @@ def test_6b_cancelar_escrito_en_pago_por_verificar_con_plantilla(tmp_path):
     avisos = _avisos_derivacion_por_plantilla(plantilla)
     assert len(avisos) == 1
     assert avisos[0][3] == [
-        NUMERO_CLIENTE_6B, "El cliente pidió cancelar mientras se verificaba el pago del pedido #1."
+        NUMERO_CLIENTE_6B, "El cliente pidió cancelar mientras se verificaba el pago del pedido #1"
     ]
 
 
