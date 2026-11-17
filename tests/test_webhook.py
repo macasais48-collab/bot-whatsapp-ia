@@ -2064,3 +2064,55 @@ def test_7a_la_retencion_solo_se_registra_si_el_perfil_tiene_agenda(fabrica_clie
 
     assert "iniciar_retencion_citas" not in sin_agenda.application.extensions
     assert callable(con_agenda.application.extensions["iniciar_retencion_citas"])
+
+
+# -- Sub-fase 7b.1: recordatorio de cita al cliente --
+
+
+@pytest.mark.parametrize("codigo, nivel", [(131047, logging.INFO), (131026, logging.WARNING)])
+def test_7b_status_failed_del_recordatorio_de_cita(fabrica_cliente, caplog, tmp_path, codigo, nivel):
+    citas = Citas(tmp_path / "citas_recordatorio.db")
+    cita_id = citas.crear_en_construccion(CLIENTE_CITA, "panaderia", 1000.0)
+    citas.fijar_wamid_recordatorio(cita_id, "wamid.recordatorio")
+    cliente = fabrica_cliente(citas=citas)
+    caplog.set_level(logging.INFO, logger="webhook")
+
+    _post_con_firma(
+        cliente,
+        _payload_estado("wamid.recordatorio", CLIENTE_CITA, status="failed", errors=[{"code": codigo, "title": "x"}]),
+    )
+
+    registros = [r for r in caplog.records if f"recordatorio de la cita #{cita_id}" in r.getMessage()]
+    assert len(registros) == 1 and registros[0].levelno == nivel
+    assert CLIENTE_CITA not in caplog.text
+    assert "Mensaje no entregado" not in caplog.text
+
+
+def test_7b_la_tarea_programada_envia_el_recordatorio_con_la_plantilla_del_entorno(
+    fabrica_cliente, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("PLANTILLA_RECORDATORIO_CITA_NOMBRE", "plantilla_de_prueba")
+    monkeypatch.setenv("PLANTILLA_RECORDATORIO_CITA_IDIOMA", "es")
+    programado = {}
+    monkeypatch.setattr(
+        modulo_webhook.modulo_flujo_cita, "iniciar_programador_retencion",
+        lambda tarea, tarea_recordatorios=None: programado.update(recordatorios=tarea_recordatorios),
+    )
+    plantillas = []
+    cliente, citas = _cliente_con_citas(
+        fabrica_cliente, tmp_path, enviar_plantilla_fn=lambda *a, **k: plantillas.append(a) or (True, "wamid.r")
+    )
+    # Confirmada un día antes del reloj de prueba (martes 5:13 p.m.) para el miércoles 8:00 a.m.
+    ayer = RELOJ_PRUEBA_SEGUNDOS - 86400
+    cita_id = citas.crear_en_construccion(CLIENTE_CITA, "panaderia", ayer)
+    citas.fijar_inicio(cita_id, "2023-11-15 08:00", "confirmacion", ayer)
+    assert citas.confirmar(cita_id, 1, 3, "2023-11-13 00:00", ayer) == "confirmada"
+
+    cliente.application.extensions["iniciar_retencion_citas"]()
+    programado["recordatorios"]()
+    programado["recordatorios"]()  # una segunda revisión no lo repite
+
+    assert plantillas == [
+        (CLIENTE_CITA, "plantilla_de_prueba", "es", [str(cita_id), "miércoles 15 de noviembre, 8:00 a.m"])
+    ]
+    assert citas.cita_por_wamid_recordatorio("wamid.r") == cita_id

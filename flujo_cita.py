@@ -17,6 +17,9 @@ Pasos (columna `paso` de la tabla `citas`):
   flujo de pedido; la derivación avisa al dueño (sub-fases 6a/6b).
 - Aviso de cita nueva al dueño: plantilla `aviso_cita_nueva` si está
   configurada, si no texto libre; wamid guardado para asociar un "failed".
+- Recordatorio al cliente (sub-fase 7b.1): `recordatorio_horas` antes de la
+  cita (24 por defecto, 0 = desactivado), revisado cada 15 minutos; plantilla
+  `recordatorio_cita` si está configurada, si no texto libre.
 
 Nunca registra en el log teléfonos completos ni datos de la cita.
 """
@@ -107,6 +110,15 @@ MENSAJE_CITA_CONFIRMADA = (
     "¡Listo! Su cita #{id} quedó agendada para el {fecha_hora}\n{datos}\n"
     "Si necesita cambiarla o cancelarla, escriba *asesor* y una persona del equipo le ayudará."
 )
+MENSAJE_RECORDATORIO = (
+    # Sin punto después de {fecha_hora}, igual que la confirmación.
+    "Le recordamos su cita #{id} para el {fecha_hora}\n"
+    "Si necesita cambiarla o cancelarla, escriba *asesor* y una persona del equipo le ayudará."
+)
+# Un recordatorio que llegaría a menos de esto del inicio ya no tiene sentido
+# (p. ej. el bot estuvo apagado): no se envía.
+MINUTOS_MINIMOS_ANTES_DEL_RECORDATORIO = 30
+MINUTOS_ENTRE_REVISIONES_DE_RECORDATORIOS = 15
 
 
 # -- Formato (puro) --
@@ -618,12 +630,78 @@ def aplicar_retencion(citas: Citas, perfil: str, config: dict, ahora: float) -> 
     return borradas
 
 
-def iniciar_programador_retencion(tarea):
-    """Ejecuta `tarea` ya y luego cada día a las 3:00 a.m. de Bogotá. Se arranca
-    desde gunicorn.conf.py (post_worker_init), igual que el reporte semanal,
-    para que las pruebas nunca lancen hilos. La tarea es idempotente."""
+def enviar_recordatorios(
+    citas: Citas,
+    perfil: str,
+    config: dict,
+    ahora: float,
+    enviar_texto_con_wamid_fn,
+    enviar_plantilla_fn=None,
+    plantilla_nombre: str | None = None,
+    plantilla_idioma: str | None = None,
+) -> int:
+    """Envía el recordatorio de cada cita confirmada que ya entró en su ventana
+    (`recordatorio_horas` antes del inicio) y todavía no lo recibió. Devuelve
+    cuántos se enviaron en esta llamada.
+
+    - Nunca dos veces: la marca se reserva en una sola sentencia antes de
+      enviar; si Meta no acepta el envío, se libera y se reintenta en la
+      siguiente revisión.
+    - Nunca para citas canceladas, pasadas o a menos de 30 minutos (si el bot
+      estuvo apagado, al volver solo envía los que todavía tienen sentido).
+    - Una cita agendada cuando ya estaba dentro de la ventana no lo recibe: el
+      cliente acaba de recibir la confirmación con la fecha y la hora.
+
+    Teléfono enmascarado en el log; nunca los datos de la cita."""
+    horas = config.get("recordatorio_horas", agenda.POR_DEFECTO["recordatorio_horas"])
+    if not horas:
+        return 0
+    desde = agenda.texto_inicio(agenda.ahora_bogota(ahora + MINUTOS_MINIMOS_ANTES_DEL_RECORDATORIO * 60))
+    hasta = agenda.texto_inicio(agenda.ahora_bogota(ahora + horas * 3600))
+    usar_plantilla = bool(plantilla_nombre and plantilla_idioma and enviar_plantilla_fn is not None)
+    enviados = 0
+    for cita in citas.pendientes_de_recordatorio(perfil, desde, hasta):
+        momento_recordatorio = agenda.momento_desde_inicio(cita["inicio"]).timestamp() - horas * 3600
+        if cita["actualizado_en"] > momento_recordatorio:
+            # Para una cita confirmada, actualizado_en es el momento de la confirmación.
+            continue
+        if not citas.reservar_recordatorio(cita["id"], ahora):
+            continue
+        numero = cita["numero_cliente"]
+        fecha_hora = fecha_hora_legible(cita["inicio"])
+        if usar_plantilla:
+            canal = "plantilla"
+            # La plantilla pone un punto después de la fecha: sin el de "a.m."/"p.m.".
+            ok, wamid = enviar_plantilla_fn(
+                numero, plantilla_nombre, plantilla_idioma, [str(cita["id"]), sin_punto_final(fecha_hora)]
+            )
+        else:
+            canal = "texto libre"
+            ok, wamid = enviar_texto_con_wamid_fn(
+                numero, MENSAJE_RECORDATORIO.format(id=cita["id"], fecha_hora=fecha_hora)
+            )
+        if not ok:
+            citas.liberar_recordatorio(cita["id"])
+            logger.warning("No se pudo enviar el recordatorio de la cita #%s (%s); se reintentará.", cita["id"], canal)
+            continue
+        if wamid:
+            # Un "failed" posterior (p. ej. 131047) se asocia a esta cita en webhook._procesar_estado.
+            citas.fijar_wamid_recordatorio(cita["id"], wamid)
+        logger.info("Cita #%s: recordatorio enviado al cliente por %s (cliente=%s)",
+                    cita["id"], canal, enmascarar_numero(numero))
+        enviados += 1
+    return enviados
+
+
+def iniciar_programador_retencion(tarea, tarea_recordatorios=None):
+    """Ejecuta `tarea` (retención) ya y luego cada día a las 3:00 a.m. de
+    Bogotá; si hay `tarea_recordatorios`, también ya y luego cada 15 minutos.
+    Se arranca desde gunicorn.conf.py (post_worker_init), igual que el reporte
+    semanal, para que las pruebas nunca lancen hilos. Las dos tareas son
+    idempotentes."""
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
 
     programador = BackgroundScheduler(timezone=agenda.ZONA_BOGOTA)
     programador.add_job(
@@ -631,6 +709,13 @@ def iniciar_programador_retencion(tarea):
         id="retencion_citas", max_instances=1, coalesce=True, misfire_grace_time=3600,
     )
     programador.add_job(tarea, id="retencion_citas_al_arrancar")
+    if tarea_recordatorios is not None:
+        programador.add_job(
+            tarea_recordatorios,
+            IntervalTrigger(minutes=MINUTOS_ENTRE_REVISIONES_DE_RECORDATORIOS, timezone=agenda.ZONA_BOGOTA),
+            id="recordatorios_citas", max_instances=1, coalesce=True,
+        )
+        programador.add_job(tarea_recordatorios, id="recordatorios_citas_al_arrancar")
     programador.start()
     return programador
 

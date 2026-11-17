@@ -154,6 +154,8 @@ def crear_app(
     citas: Citas | None = None,
     plantilla_aviso_cita_nombre: str | None = None,
     plantilla_aviso_cita_idioma: str | None = None,
+    plantilla_recordatorio_cita_nombre: str | None = None,
+    plantilla_recordatorio_cita_idioma: str | None = None,
     reloj=time.time,
 ) -> Flask:
     app = Flask(__name__)
@@ -228,6 +230,17 @@ def crear_app(
         )
         plantilla_aviso_cita_nombre = None
         plantilla_aviso_cita_idioma = None
+    if plantilla_recordatorio_cita_nombre is None:
+        plantilla_recordatorio_cita_nombre = obtener_env("PLANTILLA_RECORDATORIO_CITA_NOMBRE") or None
+    if plantilla_recordatorio_cita_idioma is None:
+        plantilla_recordatorio_cita_idioma = obtener_env("PLANTILLA_RECORDATORIO_CITA_IDIOMA") or None
+    if bool(plantilla_recordatorio_cita_nombre) != bool(plantilla_recordatorio_cita_idioma):
+        logger.warning(
+            "PLANTILLA_RECORDATORIO_CITA_NOMBRE y PLANTILLA_RECORDATORIO_CITA_IDIOMA deben configurarse "
+            "juntas; con solo una de las dos, el recordatorio de cita usa el mensaje libre."
+        )
+        plantilla_recordatorio_cita_nombre = None
+        plantilla_recordatorio_cita_idioma = None
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = perfiles_negocio.ruta_perfil_para_clave(perfil)
     if cerebro is None:
@@ -295,9 +308,25 @@ def crear_app(
             plantilla_aviso_derivacion_idioma=plantilla_aviso_derivacion_idioma,
         )
 
+        def _tarea_recordatorios():
+            modulo_flujo_cita.enviar_recordatorios(
+                citas, perfil, config_citas, reloj(), enviar_texto_con_wamid_fn,
+                enviar_plantilla_fn=enviar_plantilla_fn,
+                plantilla_nombre=plantilla_recordatorio_cita_nombre,
+                plantilla_idioma=plantilla_recordatorio_cita_idioma,
+            )
+
         def _iniciar_retencion_citas():
+            # Retención diaria y, si recordatorio_horas > 0, recordatorios cada 15 minutos (7b.1).
+            horas = config_citas.get("recordatorio_horas", 0)
+            if horas:
+                logger.info("Recordatorios de citas programados (%d horas antes, revisión cada %d minutos).",
+                            horas, modulo_flujo_cita.MINUTOS_ENTRE_REVISIONES_DE_RECORDATORIOS)
+            else:
+                logger.info("Recordatorios de citas desactivados (recordatorio_horas = 0).")
             return modulo_flujo_cita.iniciar_programador_retencion(
-                lambda: modulo_flujo_cita.aplicar_retencion(citas, perfil, config_citas, reloj())
+                lambda: modulo_flujo_cita.aplicar_retencion(citas, perfil, config_citas, reloj()),
+                _tarea_recordatorios if horas else None,
             )
 
         # Igual que el reporte semanal: gunicorn.conf.py lo arranca en
@@ -528,6 +557,23 @@ def crear_app(
                 logger.warning(
                     "El aviso de la cita #%s al dueño no se entregó (codigo=%s, titulo=%s, destino=%s).",
                     cita_id, codigo, titulo, numero_enmascarado,
+                )
+            return
+
+        cita_recordatorio = citas.cita_por_wamid_recordatorio(wamid) if (wamid and citas is not None) else None
+        if cita_recordatorio is not None:
+            # Recordatorio de cita al cliente no entregado (sub-fase 7b.1): con la
+            # ventana cerrada y sin plantilla es esperado (INFO); otro código, advertencia.
+            if codigo == CODIGO_ERROR_VENTANA_24H:
+                logger.info(
+                    "El recordatorio de la cita #%s no se entregó al cliente (codigo=%s, ventana de 24 "
+                    "horas cerrada, destino=%s).",
+                    cita_recordatorio, codigo, numero_enmascarado,
+                )
+            else:
+                logger.warning(
+                    "El recordatorio de la cita #%s no se entregó al cliente (codigo=%s, titulo=%s, destino=%s).",
+                    cita_recordatorio, codigo, titulo, numero_enmascarado,
                 )
             return
 

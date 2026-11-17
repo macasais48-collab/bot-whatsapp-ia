@@ -212,6 +212,8 @@ Opcional por perfil: se activa con la sección `citas` de `recursos_<perfil>.jso
 
 **Dueño:** recibe el aviso de cada cita nueva (plantilla `aviso_cita_nueva` si están `PLANTILLA_AVISO_CITA_NOMBRE`/`_IDIOMA`, ver `docs/plantilla_aviso_cita.md`; si no, mensaje libre) y escribe **citas** para ver las próximas, paginadas como los pedidos; al tocar una ve los datos y el teléfono del cliente.
 
+**Recordatorio al cliente:** `recordatorio_horas` antes de la cita (24 por defecto; `0` los desactiva) el bot le recuerda la cita al cliente: plantilla `recordatorio_cita` si están `PLANTILLA_RECORDATORIO_CITA_NOMBRE`/`_IDIOMA` (ver `docs/plantilla_recordatorio_cita.md`), si no mensaje libre. Revisa cada 15 minutos (y al arrancar); cada cita lo recibe una sola vez, nunca si está cancelada o ya pasó, ni si falta menos de 30 minutos, ni si se agendó cuando ya estaba dentro de la ventana.
+
 **Retención:** cada día a las 3:00 a.m. (y al arrancar) se borran los datos personales y el teléfono de las citas con más de `retencion_dias` (30 por defecto), conservando fecha y hora para estadísticas.
 
 **Salida de emergencia por consola** (mientras no exista cancelar desde el chat):

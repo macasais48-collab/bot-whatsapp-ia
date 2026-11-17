@@ -49,6 +49,7 @@ def test_config_minima_toma_los_valores_por_defecto():
     assert config["dias_hacia_adelante"] == 14
     assert config["max_citas_por_cliente"] == 3
     assert config["retencion_dias"] == 30
+    assert config["recordatorio_horas"] == 24
     assert config["festivos"] == "cerrado"
     assert config["dias_bloqueados"] == frozenset()
     assert config["telefono_negocio"] is None
@@ -66,6 +67,9 @@ def test_config_minima_toma_los_valores_por_defecto():
         ({"anticipacion_minima_minutos": -1}, "anticipacion_minima_minutos"),
         ({"max_citas_por_cliente": 0}, "max_citas_por_cliente"),
         ({"retencion_dias": 0}, "retencion_dias"),
+        ({"recordatorio_horas": -1}, "recordatorio_horas"),
+        ({"recordatorio_horas": 169}, "recordatorio_horas"),
+        ({"recordatorio_horas": "24"}, "recordatorio_horas"),
         ({"festivos": "a veces"}, "festivos"),
         ({"dias_bloqueados": ["2026-13-01"]}, "dias_bloqueados"),
         ({"dias_bloqueados": "2026-12-24"}, "dias_bloqueados"),
@@ -274,3 +278,8 @@ def test_el_modulo_no_depende_de_la_base_ni_de_la_red():
     assert "basedatos" not in agenda.__dict__
     assert "requests" not in agenda.__dict__
     assert "agenda" in sys.modules
+
+
+def test_recordatorio_horas_admite_cero_para_desactivar():
+    assert _config(recordatorio_horas=0)["recordatorio_horas"] == 0
+    assert _config(recordatorio_horas=168)["recordatorio_horas"] == 168

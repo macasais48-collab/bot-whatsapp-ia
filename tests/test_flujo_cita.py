@@ -617,3 +617,159 @@ def test_plantilla_de_derivacion_renderizada_no_tiene_punto_doble(tmp_path):
 def test_dia_corto_y_largo():
     assert flujo_cita.dia_corto(date(2026, 11, 28)) == "Sáb 28 nov"
     assert flujo_cita.dia_largo(date(2026, 11, 25)) == "miércoles 25 de noviembre"
+
+
+# -- Sub-fase 7b.1: recordatorio de cita al cliente --
+
+
+def _cita_confirmada_para_el_martes(e):
+    """Agendada el domingo 22/11 a las 8:00 p.m. para el martes 24/11 a las 8:00 a.m.
+    (36 horas antes): con 24 horas, el recordatorio toca el lunes 23/11 a las 8:00 a.m."""
+    e.hasta_confirmacion(dia="2026-11-24")
+    cita_id = e.cita()["id"]
+    e.boton("cita_confirmar")
+    assert e.citas.obtener(cita_id)["estado"] == ESTADO_CONFIRMADA
+    return cita_id
+
+
+def _recordar(e, ahora, envios=None, plantilla=None):
+    return flujo_cita.enviar_recordatorios(
+        e.citas, PERFIL, e.config, ahora, envios if envios is not None else Envios(con_wamid=True),
+        enviar_plantilla_fn=plantilla,
+        plantilla_nombre="plantilla_recordatorio" if plantilla else None,
+        plantilla_idioma="es" if plantilla else None,
+    )
+
+
+def test_recordatorio_se_envia_al_entrar_en_la_ventana_y_una_sola_vez(tmp_path):
+    e = Escenario(tmp_path)
+    cita_id = _cita_confirmada_para_el_martes(e)
+    envios = Envios(con_wamid=True, prefijo="wamid-recordatorio")
+
+    assert _recordar(e, _reloj(2026, 11, 23, 7, 59), envios) == 0  # todavía faltan más de 24 horas
+    assert _recordar(e, _reloj(2026, 11, 23, 8, 0), envios) == 1
+    assert _recordar(e, _reloj(2026, 11, 23, 8, 15), envios) == 0  # nunca dos veces
+    assert _recordar(e, _reloj(2026, 11, 24, 7, 0), envios) == 0
+
+    assert len(envios.llamadas) == 1
+    numero, texto = envios.llamadas[0]
+    assert numero == CLIENTE
+    assert texto.startswith(f"Le recordamos su cita #{cita_id} para el martes 24 de noviembre, 8:00 a.m.\n")
+    assert "*asesor*" in texto and ".." not in texto
+    assert "Ana Prueba" not in texto  # sin datos de la cita
+    cita = e.citas.obtener(cita_id)
+    assert cita["recordatorio_enviado_en"] == _reloj(2026, 11, 23, 8, 0)
+    assert e.citas.cita_por_wamid_recordatorio("wamid-recordatorio-1") == cita_id
+
+
+def test_recordatorio_por_plantilla_renderizado_sin_punto_doble(tmp_path):
+    e = Escenario(tmp_path)
+    cita_id = _cita_confirmada_para_el_martes(e)
+    plantilla = Envios(con_wamid=True, prefijo="wamid-plantilla-recordatorio")
+    texto_libre = Envios(con_wamid=True)
+
+    assert _recordar(e, _reloj(2026, 11, 23, 9, 0), texto_libre, plantilla) == 1
+
+    assert texto_libre.llamadas == []
+    numero, nombre, idioma, parametros = plantilla.llamadas[0]
+    assert (numero, nombre, idioma) == (CLIENTE, "plantilla_recordatorio", "es")
+    assert parametros == [str(cita_id), "martes 24 de noviembre, 8:00 a.m"]
+    texto = _renderizar_cuerpo_de_plantilla("plantilla_recordatorio_cita.md", parametros)
+    assert "agendada para el martes 24 de noviembre, 8:00 a.m. Si necesita" in texto
+    assert ".." not in texto
+    assert e.citas.cita_por_wamid_recordatorio("wamid-plantilla-recordatorio-1") == cita_id
+
+
+def test_recordatorio_nunca_para_citas_canceladas(tmp_path):
+    e = Escenario(tmp_path)
+    cita_id = _cita_confirmada_para_el_martes(e)
+    e.citas.cancelar(cita_id, DOMINGO_NOCHE + 60)
+    envios = Envios(con_wamid=True)
+
+    assert _recordar(e, _reloj(2026, 11, 23, 9, 0), envios) == 0
+    assert envios.llamadas == []
+
+
+@pytest.mark.parametrize(
+    "ahora, enviados",
+    [
+        (_reloj(2026, 11, 24, 7, 20), 1),  # el bot estuvo apagado: faltan 40 minutos, todavía sirve
+        (_reloj(2026, 11, 24, 7, 45), 0),  # faltan 15 minutos: ya no tiene sentido
+        (_reloj(2026, 11, 24, 9, 0), 0),  # la cita ya pasó
+    ],
+)
+def test_recordatorio_al_volver_de_un_apagado_solo_si_todavia_tiene_sentido(tmp_path, ahora, enviados):
+    e = Escenario(tmp_path)
+    _cita_confirmada_para_el_martes(e)
+
+    assert _recordar(e, ahora) == enviados
+
+
+def test_cita_agendada_dentro_de_la_ventana_no_recibe_recordatorio(tmp_path):
+    e = Escenario(tmp_path)  # domingo 8:00 p.m.; la cita del lunes 8:00 a.m. queda a 12 horas
+    e.hasta_confirmacion(dia="2026-11-23")
+    e.boton("cita_confirmar")
+    envios = Envios(con_wamid=True)
+
+    assert _recordar(e, DOMINGO_NOCHE + 15 * 60, envios) == 0
+    assert _recordar(e, _reloj(2026, 11, 23, 7, 0), envios) == 0
+    assert envios.llamadas == []
+
+
+def test_recordatorio_horas_configurable_y_cero_los_desactiva(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    con_48 = Escenario(tmp_path / "a", config=_config(recordatorio_horas=48))
+    con_48.hasta_confirmacion(dia="2026-11-25")  # 60 horas después del domingo 8:00 p.m.
+    con_48.boton("cita_confirmar")
+    assert _recordar(con_48, _reloj(2026, 11, 23, 7, 59)) == 0
+    assert _recordar(con_48, _reloj(2026, 11, 23, 8, 0)) == 1
+
+    sin = Escenario(tmp_path / "b", config=_config(recordatorio_horas=0))
+    _cita_confirmada_para_el_martes(sin)
+    envios = Envios(con_wamid=True)
+    assert _recordar(sin, _reloj(2026, 11, 24, 7, 0), envios) == 0
+    assert envios.llamadas == []
+
+
+def test_recordatorio_que_meta_no_acepta_se_reintenta(tmp_path, caplog):
+    e = Escenario(tmp_path)
+    cita_id = _cita_confirmada_para_el_martes(e)
+    caplog.set_level(logging.INFO, logger="flujo_cita")
+
+    assert _recordar(e, _reloj(2026, 11, 23, 8, 0), lambda *a: (False, None)) == 0
+    assert e.citas.obtener(cita_id)["recordatorio_enviado_en"] is None
+    assert _recordar(e, _reloj(2026, 11, 23, 8, 15)) == 1
+
+    assert CLIENTE not in caplog.text  # teléfono siempre enmascarado en el log
+    assert "Ana Prueba" not in caplog.text
+
+
+def test_programador_agrega_los_recordatorios_cada_15_minutos(monkeypatch):
+    import apscheduler.schedulers.background as modulo
+
+    trabajos = []
+
+    class ProgramadorFalso:
+        def __init__(self, **kwargs):
+            pass
+
+        def add_job(self, funcion, trigger=None, **kwargs):
+            trabajos.append((kwargs["id"], trigger))
+
+        def start(self):
+            trabajos.append(("start", None))
+
+    monkeypatch.setattr(modulo, "BackgroundScheduler", ProgramadorFalso)
+
+    flujo_cita.iniciar_programador_retencion(lambda: None)
+    solo_retencion = [id_ for id_, _ in trabajos]
+    trabajos.clear()
+    flujo_cita.iniciar_programador_retencion(lambda: None, lambda: None)
+
+    assert solo_retencion == ["retencion_citas", "retencion_citas_al_arrancar", "start"]
+    ids = [id_ for id_, _ in trabajos]
+    assert ids == ["retencion_citas", "retencion_citas_al_arrancar", "recordatorios_citas",
+                   "recordatorios_citas_al_arrancar", "start"]
+    intervalo = dict(trabajos)["recordatorios_citas"]
+    assert intervalo.interval.total_seconds() == 15 * 60

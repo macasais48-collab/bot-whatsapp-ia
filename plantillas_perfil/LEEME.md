@@ -99,11 +99,12 @@ Si el negocio agenda citas por el bot, agregue la sección `citas` en la raíz d
 | `dias_hacia_adelante` | Hasta cuántos días después de hoy se ofrece. | 1 a 60; por defecto 14. |
 | `max_citas_por_cliente` | Citas futuras por número, para que nadie llene la agenda. | 1 a 20; por defecto 3. |
 | `retencion_dias` | Días después de la cita en que se borran los datos personales. | 1 a 365; por defecto 30. |
+| `recordatorio_horas` | Cuántas horas antes de la cita se le recuerda al cliente. `0` = sin recordatorios. | 0 a 168; por defecto 24. |
 | `festivos` | `"cerrado"` o `"abierto"` (usa el horario del día). | Por defecto `"cerrado"`. |
 | `dias_bloqueados` | Vacaciones o cierres puntuales. | Fechas `"AAAA-MM-DD"`. |
 | `telefono_negocio` | Se le da al cliente si no autoriza el tratamiento de datos. | Opcional. |
 
-Un botón de bienvenida con id `agendar_cita` abre la agenda directamente. Cambiar la configuración no toca las citas ya agendadas: solo cambia lo que se ofrece desde ese momento. Para el aviso de cita nueva al dueño, ver `docs/plantilla_aviso_cita.md`.
+Un botón de bienvenida con id `agendar_cita` abre la agenda directamente. Cambiar la configuración no toca las citas ya agendadas: solo cambia lo que se ofrece desde ese momento. Para el aviso de cita nueva al dueño, ver `docs/plantilla_aviso_cita.md`; para el recordatorio al cliente (variables `PLANTILLA_RECORDATORIO_CITA_NOMBRE` / `_IDIOMA` en el `.env`), ver `docs/plantilla_recordatorio_cita.md`.
 
 Si el negocio no toma pedidos por el bot, borre `catalogo`, `domicilio` y el botón `hacer_pedido`. Solo se admiten estas secciones en la raíz: `ubicacion`, `enlaces`, `imagenes`, `catalogo`, `domicilio`, `botones`, `citas`.
 

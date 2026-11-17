@@ -9,6 +9,9 @@
   `consentimiento_en`.
 - Retención: `borrar_datos_vencidos` quita los datos personales (datos de la
   cita y teléfono) y conserva fecha, hora y estado para estadísticas.
+- Recordatorio al cliente (sub-fase 7b.1): `recordatorio_enviado_en` se marca
+  en una sola sentencia (`reservar_recordatorio`) antes de enviar, así el mismo
+  recordatorio nunca sale dos veces aunque dos revisiones coincidan.
 
 Nunca registra en el log teléfonos completos ni datos de la cita.
 """
@@ -34,7 +37,15 @@ RESULTADO_SIN_HORARIO = "sin_horario"
 
 _COLUMNAS = (
     "id, numero_cliente, perfil, estado, paso, fecha, inicio, datos_json, "
-    "consentimiento_en, wamid_aviso_dueno, creado_en, actualizado_en"
+    "consentimiento_en, wamid_aviso_dueno, creado_en, actualizado_en, "
+    "recordatorio_enviado_en, wamid_recordatorio"
+)
+
+# Columnas agregadas después de crear la tabla (sub-fase 7b.1): se suman con
+# ALTER TABLE a una base existente, sin tocar sus datos.
+_COLUMNAS_AGREGADAS = (
+    ("recordatorio_enviado_en", "REAL"),
+    ("wamid_recordatorio", "TEXT"),
 )
 
 
@@ -67,6 +78,10 @@ class Citas:
             )
             conexion.execute("CREATE INDEX IF NOT EXISTS idx_citas_cupo ON citas (perfil, inicio, estado)")
             conexion.execute("CREATE INDEX IF NOT EXISTS idx_citas_numero ON citas (numero_cliente, estado)")
+            existentes = {fila[1] for fila in conexion.execute("PRAGMA table_info(citas)")}
+            for columna, tipo in _COLUMNAS_AGREGADAS:
+                if columna not in existentes:
+                    conexion.execute(f"ALTER TABLE citas ADD COLUMN {columna} {tipo}")
 
         ejecutar(self._ruta_bd, _crear)
 
@@ -77,6 +92,7 @@ class Citas:
         (
             id_cita, numero_cliente, perfil, estado, paso, fecha, inicio, datos_json,
             consentimiento_en, wamid_aviso_dueno, creado_en, actualizado_en,
+            recordatorio_enviado_en, wamid_recordatorio,
         ) = fila
         return {
             "id": id_cita,
@@ -91,6 +107,8 @@ class Citas:
             "wamid_aviso_dueno": wamid_aviso_dueno,
             "creado_en": creado_en,
             "actualizado_en": actualizado_en,
+            "recordatorio_enviado_en": recordatorio_enviado_en,
+            "wamid_recordatorio": wamid_recordatorio,
         }
 
     def obtener(self, cita_id: int) -> dict | None:
@@ -157,6 +175,32 @@ class Citas:
             self._ruta_bd,
             lambda conexion: conexion.execute(
                 "SELECT id FROM citas WHERE wamid_aviso_dueno = ?", (wamid,)
+            ).fetchone(),
+        )
+        return fila[0] if fila is not None else None
+
+    def pendientes_de_recordatorio(self, perfil: str, desde_inicio: str, hasta_inicio: str) -> list[dict]:
+        """Citas confirmadas, con teléfono, sin recordatorio enviado y con
+        horario entre `desde_inicio` y `hasta_inicio` (inclusivos)."""
+        filas = ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                f"""
+                SELECT {_COLUMNAS} FROM citas
+                WHERE perfil = ? AND estado = ? AND recordatorio_enviado_en IS NULL
+                  AND numero_cliente != '' AND inicio >= ? AND inicio <= ?
+                ORDER BY inicio ASC, id ASC
+                """,
+                (perfil, ESTADO_CONFIRMADA, desde_inicio, hasta_inicio),
+            ).fetchall(),
+        )
+        return [self._fila_a_dict(fila) for fila in filas]
+
+    def cita_por_wamid_recordatorio(self, wamid: str) -> int | None:
+        fila = ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "SELECT id FROM citas WHERE wamid_recordatorio = ?", (wamid,)
             ).fetchone(),
         )
         return fila[0] if fila is not None else None
@@ -288,6 +332,39 @@ class Citas:
             self._ruta_bd,
             lambda conexion: conexion.execute(
                 "UPDATE citas SET wamid_aviso_dueno = ? WHERE id = ?", (wamid, cita_id)
+            ),
+        )
+
+    # -- Recordatorio al cliente (sub-fase 7b.1) --
+
+    def reservar_recordatorio(self, cita_id: int, ahora: float) -> bool:
+        """Marca el recordatorio como enviado solo si la cita sigue confirmada
+        y no lo tenía: True = esta llamada lo reservó y debe enviarlo."""
+        return ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "UPDATE citas SET recordatorio_enviado_en = ? "
+                "WHERE id = ? AND estado = ? AND recordatorio_enviado_en IS NULL",
+                (ahora, cita_id, ESTADO_CONFIRMADA),
+            ).rowcount,
+        ) == 1
+
+    def liberar_recordatorio(self, cita_id: int) -> None:
+        """Quita la marca si el envío falló (Meta no lo aceptó), para
+        reintentarlo en la siguiente revisión."""
+        ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "UPDATE citas SET recordatorio_enviado_en = NULL, wamid_recordatorio = NULL WHERE id = ?",
+                (cita_id,),
+            ),
+        )
+
+    def fijar_wamid_recordatorio(self, cita_id: int, wamid: str) -> None:
+        ejecutar(
+            self._ruta_bd,
+            lambda conexion: conexion.execute(
+                "UPDATE citas SET wamid_recordatorio = ? WHERE id = ?", (wamid, cita_id)
             ),
         )
 

@@ -114,3 +114,11 @@ def test_variables_del_aviso_de_cita_estan_y_se_marcan_como_opcionales():
     assert "PLANTILLA_AVISO_CITA_IDIOMA: con valor" in reporte
     assert "es_CO" not in reporte
     assert "PLANTILLA_AVISO_CITA_NOMBRE: VACÍO (opcional)" in reporte
+
+
+def test_variables_del_recordatorio_de_cita_estan_y_se_marcan_como_opcionales():
+    reporte = generar_reporte({"PLANTILLA_RECORDATORIO_CITA_NOMBRE": "plantilla_de_prueba"})
+
+    assert "PLANTILLA_RECORDATORIO_CITA_NOMBRE: con valor" in reporte
+    assert "plantilla_de_prueba" not in reporte
+    assert "PLANTILLA_RECORDATORIO_CITA_IDIOMA: VACÍO (opcional)" in reporte

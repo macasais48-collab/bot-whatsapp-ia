@@ -240,3 +240,68 @@ def test_comparte_el_archivo_de_base_con_pedidos_sin_interferir(tmp_path):
     assert citas.obtener(cita_id)["estado"] == ESTADO_EN_CONSTRUCCION
     Pedidos(ruta)  # reabrir no rompe nada
     Citas(ruta)
+
+
+# -- Sub-fase 7b.1: recordatorio --
+
+
+def test_reservar_recordatorio_solo_una_vez_y_solo_si_esta_confirmada(tmp_path):
+    citas = _citas(tmp_path)
+    confirmada = _cita_con_horario(citas)
+    _confirmar(citas, confirmada)
+    en_construccion = _cita_con_horario(citas, "2026-11-24 09:00", numero="573009998877")
+
+    assert citas.reservar_recordatorio(confirmada, 3000.0) is True
+    assert citas.reservar_recordatorio(confirmada, 3001.0) is False
+    assert citas.reservar_recordatorio(en_construccion, 3000.0) is False
+    citas.liberar_recordatorio(confirmada)
+    assert citas.reservar_recordatorio(confirmada, 3002.0) is True
+
+
+def test_pendientes_de_recordatorio_filtra_por_rango_marca_y_estado(tmp_path):
+    citas = _citas(tmp_path)
+    dentro = _cita_con_horario(citas, "2026-11-24 08:00")
+    _confirmar(citas, dentro)
+    fuera = _cita_con_horario(citas, "2026-11-26 08:00", numero="573009998877")
+    _confirmar(citas, fuera)
+    ya_recordada = _cita_con_horario(citas, "2026-11-24 09:00", numero="573006667788")
+    _confirmar(citas, ya_recordada)
+    citas.reservar_recordatorio(ya_recordada, 3000.0)
+    cancelada = _cita_con_horario(citas, "2026-11-24 10:00", numero="573004445566")
+    _confirmar(citas, cancelada)
+    citas.cancelar(cancelada, 3000.0)
+
+    pendientes = citas.pendientes_de_recordatorio(PERFIL, "2026-11-24 00:00", "2026-11-25 00:00")
+
+    assert [c["id"] for c in pendientes] == [dentro]
+
+
+def test_una_base_creada_antes_de_7b_recibe_las_columnas_nuevas_sin_perder_datos(tmp_path):
+    import sqlite3
+
+    ruta = tmp_path / "vieja.db"
+    conexion = sqlite3.connect(ruta)
+    conexion.execute(
+        """
+        CREATE TABLE citas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, numero_cliente TEXT NOT NULL, perfil TEXT NOT NULL,
+            estado TEXT NOT NULL, paso TEXT NOT NULL, fecha TEXT, inicio TEXT, datos_json TEXT,
+            consentimiento_en REAL, wamid_aviso_dueno TEXT, creado_en REAL NOT NULL, actualizado_en REAL NOT NULL
+        )
+        """
+    )
+    conexion.execute(
+        "INSERT INTO citas (numero_cliente, perfil, estado, paso, inicio, creado_en, actualizado_en) "
+        "VALUES (?, ?, ?, 'confirmacion', '2026-11-24 08:00', 1000.0, 2000.0)",
+        (CLIENTE, PERFIL, ESTADO_CONFIRMADA),
+    )
+    conexion.commit()
+    conexion.close()
+
+    citas = Citas(ruta)
+    Citas(ruta)  # abrirla otra vez no vuelve a agregar las columnas
+
+    cita = citas.obtener(1)
+    assert cita["inicio"] == "2026-11-24 08:00" and cita["estado"] == ESTADO_CONFIRMADA
+    assert cita["recordatorio_enviado_en"] is None and cita["wamid_recordatorio"] is None
+    assert citas.reservar_recordatorio(1, 3000.0) is True

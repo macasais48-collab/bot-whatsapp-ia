@@ -33,6 +33,7 @@ POR_DEFECTO = {
     "dias_hacia_adelante": 14,
     "max_citas_por_cliente": 3,
     "retencion_dias": 30,
+    "recordatorio_horas": 24,  # sub-fase 7b.1; 0 = sin recordatorios
     "festivos": FESTIVOS_CERRADO,
 }
 
@@ -44,6 +45,7 @@ RANGOS_ENTEROS = {
     "dias_hacia_adelante": (1, 60),
     "max_citas_por_cliente": (1, 20),
     "retencion_dias": (1, 365),
+    "recordatorio_horas": (0, 7 * 24),
 }
 
 MAXIMO_DATOS = 5
