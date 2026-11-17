@@ -432,3 +432,37 @@ def test_falla_con_descripcion_de_botones_vacia(tmp_path):
         cargar_recursos(ruta)
 
     assert "descripcion" in str(info.value)
+
+
+# -- Sub-fase 7a: sección opcional "citas" --
+
+CITAS_VALIDAS = {
+    "duracion_minutos": 30,
+    "horario": {"lunes": [["08:00", "12:00"]]},
+    "datos": [{"clave": "nombre", "pregunta": "¿A nombre de quién?", "etiqueta": "Nombre"}],
+}
+
+
+def test_carga_la_seccion_citas_validada_y_normalizada(tmp_path):
+    ruta = _escribir(tmp_path, "recursos.json", {"citas": CITAS_VALIDAS})
+
+    recursos = cargar_recursos(ruta)
+
+    assert recursos["citas"]["duracion_minutos"] == 30
+    assert recursos["citas"]["max_citas_por_cliente"] == 3
+    assert recursos["citas"]["horario"] == {0: [(480, 720)]}
+
+
+def test_seccion_citas_invalida_falla_al_cargar(tmp_path):
+    ruta = _escribir(tmp_path, "recursos.json", {"citas": {**CITAS_VALIDAS, "duracion_minutos": 0}})
+
+    with pytest.raises(ValueError, match="recursos.json: 'citas.duracion_minutos'"):
+        cargar_recursos(ruta)
+
+
+def test_sin_seccion_citas_el_perfil_carga_igual_que_antes(tmp_path):
+    from perfiles_negocio import RECURSOS_NEGOCIO
+
+    for ruta_recursos in RECURSOS_NEGOCIO.values():
+        assert "citas" not in cargar_recursos(ruta_recursos)
+    assert "citas" not in cargar_recursos(_escribir(tmp_path, "recursos.json", {}))

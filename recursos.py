@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from agenda import validar_config_citas
+
 LIMITE_TEXTO_BOTON = 20
 LIMITE_DESCRIPCION_ENLACE = 1024
 TAMANO_MAXIMO_IMAGEN_BYTES = 5 * 1024 * 1024
@@ -25,7 +27,7 @@ LIMITE_DESCRIPCION_FILA_LISTA = 72
 LIMITE_TITULO_SECCION_LISTA = 24
 LIMITE_TEXTO_BOTON_LISTA = 20
 
-CLAVES_RAIZ_PERMITIDAS = {"ubicacion", "enlaces", "imagenes", "catalogo", "domicilio", "botones"}
+CLAVES_RAIZ_PERMITIDAS = {"ubicacion", "enlaces", "imagenes", "catalogo", "domicilio", "botones", "citas"}
 CLAVE_PEDIDO_MINIMO = "pedido_minimo"
 
 
@@ -58,6 +60,10 @@ def cargar_recursos(ruta: Path) -> dict:
         recursos["domicilio"] = _validar_domicilio(datos["domicilio"], ruta.name)
     if "botones" in datos:
         recursos["botones"] = _validar_botones(datos["botones"], ruta.name)
+    if "citas" in datos:
+        # Sub-fase 7a: agenda de citas (opcional; sin esta sección el perfil
+        # funciona exactamente igual). La validación vive en agenda.py.
+        recursos["citas"] = validar_config_citas(datos["citas"], ruta.name)
     return recursos
 
 
