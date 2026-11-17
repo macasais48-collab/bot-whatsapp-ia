@@ -106,7 +106,7 @@ Si el negocio agenda citas por el bot, agregue la sección `citas` en la raíz d
 
 Un botón de bienvenida con id `agendar_cita` abre la agenda directamente. Cambiar la configuración no toca las citas ya agendadas: solo cambia lo que se ofrece desde ese momento. Para el aviso de cita nueva al dueño, ver `docs/plantilla_aviso_cita.md`; para el recordatorio al cliente (variables `PLANTILLA_RECORDATORIO_CITA_NOMBRE` / `_IDIOMA` en el `.env`), ver `docs/plantilla_recordatorio_cita.md`.
 
-Si el negocio no toma pedidos por el bot, borre `catalogo`, `domicilio` y el botón `hacer_pedido`. Solo se admiten estas secciones en la raíz: `ubicacion`, `enlaces`, `imagenes`, `catalogo`, `domicilio`, `botones`, `citas`.
+Si el negocio toma pedidos, el aviso al cliente cuando el pedido va en camino, está listo para recoger o fue entregado puede ir por plantilla (variables `PLANTILLA_ESTADO_PEDIDO_NOMBRE` / `_IDIOMA` en el `.env`, ver `docs/plantilla_estado_pedido.md`); sin ella sale como mensaje libre. Si el negocio no toma pedidos por el bot, borre `catalogo`, `domicilio` y el botón `hacer_pedido`. Solo se admiten estas secciones en la raíz: `ubicacion`, `enlaces`, `imagenes`, `catalogo`, `domicilio`, `botones`, `citas`.
 
 ## 5. Revisar que no quedó nada de la plantilla y validar en el PC
 

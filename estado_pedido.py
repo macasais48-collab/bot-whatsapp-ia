@@ -8,6 +8,11 @@ gestionar_pedido.py (respaldo manual) — nunca la IA.
 Transiciones (columna `estado_entrega`, aparte del estado de pago):
 - Domicilio: en_preparacion → en_camino → entregado.
 - Recoger:   en_preparacion → listo_para_recoger → entregado.
+
+Aviso al cliente en cada paso: por la plantilla `estado_pedido` si están
+PLANTILLA_ESTADO_PEDIDO_NOMBRE/_IDIOMA (sub-fase 7b.2; llega aunque la
+ventana de 24 horas esté cerrada, p. ej. un pedido para el día siguiente);
+si no, en texto libre.
 """
 import logging
 import unicodedata
@@ -183,10 +188,14 @@ def avanzar_estado(
     estado_nuevo: str,
     ahora: float,
     enviar_texto_con_wamid_fn,
+    enviar_plantilla_fn=None,
+    plantilla_nombre: str | None = None,
+    plantilla_idioma: str | None = None,
 ) -> str:
     """Aplica la transición solo si `estado_nuevo` es justo el siguiente paso
-    del estado actual del pedido; avisa al cliente en texto libre y devuelve
-    el mensaje de resultado para el dueño (o para la consola)."""
+    del estado actual del pedido; avisa al cliente (plantilla si está
+    configurada, si no texto libre) y devuelve el mensaje de resultado para el
+    dueño (o para la consola)."""
     pedido = pedidos.obtener(pedido_id)
     if pedido is None:
         return f"No existe un pedido con el número {pedido_id}."
@@ -208,7 +217,17 @@ def avanzar_estado(
         pedido_id, estado_actual, estado_nuevo, numero_enmascarado,
     )
 
-    ok, wamid = enviar_texto_con_wamid_fn(pedido["numero_cliente"], MENSAJE_CLIENTE[estado_nuevo].format(id=pedido_id))
+    if plantilla_nombre and plantilla_idioma and enviar_plantilla_fn is not None:
+        # Variables de docs/plantilla_estado_pedido.md: número y estado
+        # ("En camino", "Listo para recoger", "Entregado"; sin punto final).
+        ok, wamid = enviar_plantilla_fn(
+            pedido["numero_cliente"], plantilla_nombre, plantilla_idioma,
+            [str(pedido_id), ETIQUETA_ESTADO[estado_nuevo]],
+        )
+    else:
+        ok, wamid = enviar_texto_con_wamid_fn(
+            pedido["numero_cliente"], MENSAJE_CLIENTE[estado_nuevo].format(id=pedido_id)
+        )
     if ok and wamid:
         # Un fallo posterior (status "failed", p. ej. 131047 por la ventana de
         # 24 horas) se asocia a este pedido en webhook._procesar_estado.

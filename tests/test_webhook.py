@@ -2116,3 +2116,54 @@ def test_7b_la_tarea_programada_envia_el_recordatorio_con_la_plantilla_del_entor
         (CLIENTE_CITA, "plantilla_de_prueba", "es", [str(cita_id), "miércoles 15 de noviembre, 8:00 a.m"])
     ]
     assert citas.cita_por_wamid_recordatorio("wamid.r") == cita_id
+
+
+# -- Sub-fase 7b.2: plantilla para el aviso de estado del pedido --
+
+
+def test_7b_boton_avanzar_con_plantilla_de_estado_avisa_por_plantilla(
+    fabrica_cliente, envios, envios_con_wamid, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("PLANTILLA_ESTADO_PEDIDO_NOMBRE", "plantilla_de_prueba")
+    monkeypatch.setenv("PLANTILLA_ESTADO_PEDIDO_IDIOMA", "es")
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    numero_cliente = "573001112233"
+    pedido_id = _pedido_confirmado_webhook(pedidos, numero_cliente)
+    plantillas = []
+    cliente = fabrica_cliente(
+        pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA,
+        enviar_plantilla_fn=lambda *a, **k: plantillas.append(a) or (True, "wamid.plantilla-estado"),
+    )
+
+    _post_con_firma(
+        cliente, _payload_mensaje_boton("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"avanzar_{pedido_id}_en_camino")
+    )
+
+    assert pedidos.obtener(pedido_id)["estado_entrega"] == "en_camino"
+    assert plantillas == [(numero_cliente, "plantilla_de_prueba", "es", [str(pedido_id), "En camino"])]
+    assert envios_con_wamid.llamadas == []
+    assert envios.llamadas == [(NUMERO_DUENO_DE_PRUEBA, f"Pedido #{pedido_id}: En camino. Se avisó al cliente.")]
+    assert pedidos.info_aviso_dueno_por_wamid("wamid.plantilla-estado") == {
+        "pedido_id": pedido_id, "tipo": "estado_cliente",
+    }
+
+
+def test_7b_con_solo_una_variable_de_plantilla_de_estado_usa_texto_libre(
+    fabrica_cliente, envios_con_wamid, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("PLANTILLA_ESTADO_PEDIDO_NOMBRE", "plantilla_de_prueba")
+    monkeypatch.delenv("PLANTILLA_ESTADO_PEDIDO_IDIOMA", raising=False)
+    pedidos = Pedidos(tmp_path / "pedidos.db")
+    pedido_id = _pedido_confirmado_webhook(pedidos, "573001112233")
+    plantillas = []
+    cliente = fabrica_cliente(
+        pedidos=pedidos, numero_dueno=NUMERO_DUENO_DE_PRUEBA,
+        enviar_plantilla_fn=lambda *a, **k: plantillas.append(a) or (True, "wamid.x"),
+    )
+
+    _post_con_firma(
+        cliente, _payload_mensaje_boton("wamid.1", NUMERO_DUENO_DE_PRUEBA, f"avanzar_{pedido_id}_en_camino")
+    )
+
+    assert plantillas == []
+    assert envios_con_wamid.llamadas == [("573001112233", f"Su pedido #{pedido_id} va en camino.")]

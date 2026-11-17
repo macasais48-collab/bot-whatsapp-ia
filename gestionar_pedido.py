@@ -77,7 +77,14 @@ def avanzar_estado(pedidos: Pedidos, pedido_id: int) -> int:
     if not _confirmar_con_el_usuario(pedido, accion):
         print("Cancelado, no se hizo ningún cambio.")
         return 0
-    print(estado_pedido.avanzar_estado(pedidos, pedido_id, estado_nuevo, time.time(), enviar_texto_con_wamid))
+    nombre = obtener_env("PLANTILLA_ESTADO_PEDIDO_NOMBRE") or None
+    idioma = obtener_env("PLANTILLA_ESTADO_PEDIDO_IDIOMA") or None
+    if not (nombre and idioma):
+        nombre = idioma = None  # con solo una de las dos: mensaje libre, igual que el webhook
+    print(estado_pedido.avanzar_estado(
+        pedidos, pedido_id, estado_nuevo, time.time(), enviar_texto_con_wamid,
+        enviar_plantilla_fn=enviar_plantilla, plantilla_nombre=nombre, plantilla_idioma=idioma,
+    ))
     return 0
 
 

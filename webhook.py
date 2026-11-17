@@ -156,6 +156,8 @@ def crear_app(
     plantilla_aviso_cita_idioma: str | None = None,
     plantilla_recordatorio_cita_nombre: str | None = None,
     plantilla_recordatorio_cita_idioma: str | None = None,
+    plantilla_estado_pedido_nombre: str | None = None,
+    plantilla_estado_pedido_idioma: str | None = None,
     reloj=time.time,
 ) -> Flask:
     app = Flask(__name__)
@@ -241,6 +243,17 @@ def crear_app(
         )
         plantilla_recordatorio_cita_nombre = None
         plantilla_recordatorio_cita_idioma = None
+    if plantilla_estado_pedido_nombre is None:
+        plantilla_estado_pedido_nombre = obtener_env("PLANTILLA_ESTADO_PEDIDO_NOMBRE") or None
+    if plantilla_estado_pedido_idioma is None:
+        plantilla_estado_pedido_idioma = obtener_env("PLANTILLA_ESTADO_PEDIDO_IDIOMA") or None
+    if bool(plantilla_estado_pedido_nombre) != bool(plantilla_estado_pedido_idioma):
+        logger.warning(
+            "PLANTILLA_ESTADO_PEDIDO_NOMBRE y PLANTILLA_ESTADO_PEDIDO_IDIOMA deben configurarse juntas; "
+            "con solo una de las dos, el aviso de estado del pedido usa el mensaje libre."
+        )
+        plantilla_estado_pedido_nombre = None
+        plantilla_estado_pedido_idioma = None
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = perfiles_negocio.ruta_perfil_para_clave(perfil)
     if cerebro is None:
@@ -592,7 +605,8 @@ def crear_app(
 
         if info is not None and info["tipo"] == "estado_cliente" and codigo == CODIGO_ERROR_VENTANA_24H:
             # Aviso de estado del pedido al cliente fuera de su ventana de 24
-            # horas: el cambio de estado ya quedó aplicado, así que esto es solo
+            # horas (texto libre, sin la plantilla de la sub-fase 7b.2): el
+            # cambio de estado ya quedó aplicado, así que esto es solo
             # informativo. Cualquier otro código sigue como advertencia (abajo).
             logger.info(
                 "El aviso de estado del pedido #%s no se entregó al cliente (codigo=%s, ventana "
@@ -703,7 +717,10 @@ def crear_app(
             if avance is not None:
                 pedido_id, estado_nuevo = avance
                 resultado = estado_pedido.avanzar_estado(
-                    pedidos, pedido_id, estado_nuevo, ahora, enviar_texto_con_wamid_fn
+                    pedidos, pedido_id, estado_nuevo, ahora, enviar_texto_con_wamid_fn,
+                    enviar_plantilla_fn=enviar_plantilla_fn,
+                    plantilla_nombre=plantilla_estado_pedido_nombre,
+                    plantilla_idioma=plantilla_estado_pedido_idioma,
                 )
                 enviar_texto_fn(numero_dueno, resultado)
                 return

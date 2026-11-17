@@ -159,7 +159,7 @@ Un pedido confirmado (en efectivo o con el pago por QR ya verificado) queda **en
 
 El dueño escribe **pedidos** (sin importar mayúsculas ni tildes) desde `NUMERO_DUENO` y recibe una lista de los pedidos activos, del más antiguo al más reciente, con el número de pedido, la forma de entrega, el estado y el total (sin teléfono ni dirección). Si hay más de 10, se muestran 9 y una fila "Ver más" con los siguientes. Al tocar un pedido, recibe su detalle y **un solo botón** con el siguiente paso válido (p. ej. "Marcar en camino"). Al tocarlo, el cliente recibe un aviso corto en texto libre ("Su pedido #N va en camino.") y el dueño una confirmación. El botón lleva el número de pedido y el paso exacto, así que una doble pulsación o un botón viejo nunca aplica un cambio que ya no corresponde ni repite el aviso al cliente.
 
-El aviso al cliente es un mensaje libre: en este tipo de negocio la ventana de 24 horas suele estar abierta, porque el cliente acaba de escribir para hacer el pedido. Si está cerrada, Meta lo rechaza con el código 131047; el cambio de estado igual queda aplicado y el fallo se registra en el log como informativo, asociado al pedido.
+El aviso al cliente va por la plantilla `estado_pedido` si están `PLANTILLA_ESTADO_PEDIDO_NOMBRE` y `PLANTILLA_ESTADO_PEDIDO_IDIOMA` (ver `docs/plantilla_estado_pedido.md`): llega aunque la ventana de 24 horas esté cerrada, por ejemplo en un pedido para el día siguiente. Sin la plantilla es un mensaje libre: si la ventana está cerrada, Meta lo rechaza con el código 131047; el cambio de estado igual queda aplicado y el fallo se registra en el log como informativo, asociado al pedido. `gestionar_pedido.py estado avanzar` usa la misma plantilla.
 
 Los pedidos que ya estaban confirmados antes de existir esta función se migran como **entregados**, para que no aparezcan como pendientes.
 
@@ -290,6 +290,7 @@ BotWhatsApp/
 ├── docs/capturas/                 # Capturas de pantalla de este README
 ├── docs/plantilla_aviso_dueno.md  # Especificación de la plantilla del aviso al dueño (WhatsApp Manager)
 ├── docs/plantilla_aviso_pedido_nuevo.md  # Especificación de la plantilla del aviso de pedido nuevo (WhatsApp Manager)
+├── docs/plantilla_estado_pedido.md       # Especificación de la plantilla del aviso de estado del pedido al cliente
 ├── docs/plantilla_reporte_semanal.md     # Especificación de la plantilla del reporte semanal (WhatsApp Manager)
 ├── docs/plantilla_aviso_derivacion.md    # Especificación de la plantilla del aviso de derivación (WhatsApp Manager)
 ├── docs/plantilla_aviso_cita.md          # Especificación de la plantilla del aviso de cita nueva (WhatsApp Manager)

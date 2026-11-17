@@ -274,3 +274,108 @@ def test_la_lista_nunca_incluye_telefono_ni_direccion(pedidos):
     contenido = repr(secciones)
     assert NUMERO_CLIENTE not in contenido
     assert "Calle 10" not in contenido
+
+
+# -- Sub-fase 7b.2: plantilla para el aviso de estado --
+
+RAIZ = __import__("pathlib").Path(__file__).parent.parent
+
+
+class PlantillasFalsas:
+    def __init__(self, ok=True, wamid="wamid.plantilla-estado"):
+        self.ok = ok
+        self.wamid = wamid
+        self.llamadas = []
+
+    def __call__(self, numero, nombre, idioma, parametros, botones=None):
+        self.llamadas.append((numero, nombre, idioma, parametros))
+        return self.ok, (self.wamid if self.ok else None)
+
+
+def _cuerpo_renderizado(parametros):
+    import re
+
+    documento = (RAIZ / "docs" / "plantilla_estado_pedido.md").read_text(encoding="utf-8")
+    cuerpo = re.search(r"\| \*\*Cuerpo\*\* \| `([^`]+)` \|", documento).group(1)
+    for indice, valor in enumerate(parametros, start=1):
+        cuerpo = cuerpo.replace("{{%d}}" % indice, valor)
+    return cuerpo
+
+
+@pytest.mark.parametrize(
+    "tipo_entrega, secuencia, estados",
+    [
+        ("domicilio", [ENTREGA_EN_CAMINO, ENTREGA_ENTREGADO], ["En camino", "Entregado"]),
+        ("recoger", [ENTREGA_LISTO_PARA_RECOGER, ENTREGA_ENTREGADO], ["Listo para recoger", "Entregado"]),
+    ],
+)
+def test_con_plantilla_cada_paso_avisa_por_plantilla_y_no_por_texto_libre(pedidos, tipo_entrega, secuencia, estados):
+    pedido_id = _pedido_confirmado(pedidos, tipo_entrega)
+    texto_libre = EnviosConWamidFalsos()
+    plantillas = PlantillasFalsas()
+
+    for estado_nuevo in secuencia:
+        resultado = estado_pedido.avanzar_estado(
+            pedidos, pedido_id, estado_nuevo, 2000.0, texto_libre,
+            enviar_plantilla_fn=plantillas, plantilla_nombre="plantilla_de_prueba", plantilla_idioma="es",
+        )
+        assert "Se avisó al cliente" in resultado
+
+    assert texto_libre.llamadas == []
+    assert plantillas.llamadas == [
+        (NUMERO_CLIENTE, "plantilla_de_prueba", "es", [str(pedido_id), estado]) for estado in estados
+    ]
+
+
+def test_la_plantilla_renderizada_se_lee_bien_y_sin_punto_doble(pedidos):
+    pedido_id = _pedido_confirmado(pedidos, "domicilio")
+    plantillas = PlantillasFalsas()
+
+    estado_pedido.avanzar_estado(
+        pedidos, pedido_id, ENTREGA_EN_CAMINO, 2000.0, EnviosConWamidFalsos(),
+        enviar_plantilla_fn=plantillas, plantilla_nombre="plantilla_de_prueba", plantilla_idioma="es",
+    )
+
+    texto = _cuerpo_renderizado(plantillas.llamadas[0][3])
+    assert texto == f"Hay una novedad en su pedido número {pedido_id}. Estado actual: En camino. Gracias por su compra."
+    assert ".." not in texto
+
+
+def test_el_wamid_de_la_plantilla_tambien_se_registra_como_estado_cliente(pedidos):
+    pedido_id = _pedido_confirmado(pedidos, "recoger")
+
+    estado_pedido.avanzar_estado(
+        pedidos, pedido_id, ENTREGA_LISTO_PARA_RECOGER, 2000.0, EnviosConWamidFalsos(),
+        enviar_plantilla_fn=PlantillasFalsas(wamid="wamid.plantilla-1"),
+        plantilla_nombre="plantilla_de_prueba", plantilla_idioma="es",
+    )
+
+    assert pedidos.info_aviso_dueno_por_wamid("wamid.plantilla-1") == {"pedido_id": pedido_id, "tipo": "estado_cliente"}
+
+
+def test_si_la_plantilla_falla_el_estado_queda_aplicado(pedidos):
+    pedido_id = _pedido_confirmado(pedidos, "domicilio")
+
+    resultado = estado_pedido.avanzar_estado(
+        pedidos, pedido_id, ENTREGA_EN_CAMINO, 2000.0, EnviosConWamidFalsos(),
+        enviar_plantilla_fn=PlantillasFalsas(ok=False),
+        plantilla_nombre="plantilla_de_prueba", plantilla_idioma="es",
+    )
+
+    assert pedidos.obtener(pedido_id)["estado_entrega"] == ENTREGA_EN_CAMINO
+    assert "No se pudo avisar al cliente" in resultado
+
+
+@pytest.mark.parametrize("nombre, idioma", [("plantilla_de_prueba", None), (None, "es")])
+def test_con_solo_una_variable_de_plantilla_usa_texto_libre(pedidos, nombre, idioma):
+    pedido_id = _pedido_confirmado(pedidos, "domicilio")
+    texto_libre = EnviosConWamidFalsos()
+    plantillas = PlantillasFalsas()
+
+    estado_pedido.avanzar_estado(
+        pedidos, pedido_id, ENTREGA_EN_CAMINO, 2000.0, texto_libre,
+        enviar_plantilla_fn=plantillas, plantilla_nombre=nombre, plantilla_idioma=idioma,
+    )
+
+    assert plantillas.llamadas == []
+    assert texto_libre.llamadas == [(NUMERO_CLIENTE, f"Su pedido #{pedido_id} va en camino.")]

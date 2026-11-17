@@ -147,6 +147,8 @@ def test_confirmar_dispara_el_aviso_de_pedido_nuevo_resolviendo_domicilio_del_pe
 
 def _preparar_estado(monkeypatch, tmp_path, respuestas_input=None):
     envios = _preparar(monkeypatch, tmp_path, respuestas_input=respuestas_input)
+    monkeypatch.delenv("PLANTILLA_ESTADO_PEDIDO_NOMBRE", raising=False)
+    monkeypatch.delenv("PLANTILLA_ESTADO_PEDIDO_IDIOMA", raising=False)
     envios_con_wamid = []
     monkeypatch.setattr(
         "gestionar_pedido.enviar_texto_con_wamid",
@@ -307,3 +309,27 @@ def test_citas_cancelar_con_no_o_inexistente_no_cambia_nada(tmp_path, monkeypatc
     assert citas.obtener(cita_id)["estado"] == "confirmada"
     assert gestionar_pedido.main(["citas", "cancelar", "999"]) == 1
     assert gestionar_pedido.main(["citas", "cancelar", "abc"]) == 1
+
+
+# -- Sub-fase 7b.2: la consola usa la plantilla de estado si está configurada --
+
+
+def test_estado_avanzar_usa_la_plantilla_de_estado_del_entorno(tmp_path, monkeypatch):
+    _, envios_con_wamid = _preparar_estado(monkeypatch, tmp_path, respuestas_input=["si"])
+    monkeypatch.setenv("PLANTILLA_ESTADO_PEDIDO_NOMBRE", "plantilla_de_prueba")
+    monkeypatch.setenv("PLANTILLA_ESTADO_PEDIDO_IDIOMA", "es")
+    llamadas_plantilla = []
+    monkeypatch.setattr(
+        "gestionar_pedido.enviar_plantilla",
+        lambda numero, nombre, idioma, parametros, botones=None: (
+            llamadas_plantilla.append((numero, nombre, idioma, parametros)) or (True, "wamid-plantilla-estado")
+        ),
+    )
+    pedidos, pedido_id = _pedido_confirmado(tmp_path, tipo_entrega="recoger")
+
+    codigo = gestionar_pedido.main(["estado", "avanzar", str(pedido_id)])
+
+    assert codigo == 0
+    assert envios_con_wamid == []
+    assert llamadas_plantilla == [("573001112233", "plantilla_de_prueba", "es", [str(pedido_id), "Listo para recoger"])]
+    assert pedidos.info_aviso_dueno_por_wamid("wamid-plantilla-estado")["tipo"] == "estado_cliente"
