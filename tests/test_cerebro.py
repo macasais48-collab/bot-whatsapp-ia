@@ -603,3 +603,46 @@ def test_el_prompt_pide_el_resumen_de_derivacion_sin_el_telefono():
     sistema = fake.ultima_llamada[0]
     assert "resumen_derivacion" in sistema
     assert "sin incluir su número de teléfono" in sistema
+
+
+# -- Sub-fase 7a: adjunto "agenda" --
+
+RECURSOS_CON_CITAS = {
+    "citas": {
+        "duracion_minutos": 30,
+        "horario": {"lunes": [["08:00", "12:00"]]},
+        "datos": [{"clave": "nombre", "pregunta": "¿A nombre de quién?", "etiqueta": "Nombre"}],
+    }
+}
+
+
+def _ruta_recursos(tmp_path, datos):
+    ruta = tmp_path / "recursos.json"
+    ruta.write_text(json.dumps(datos), encoding="utf-8")
+    return ruta
+
+
+def test_con_citas_el_prompt_describe_la_agenda_y_prohibe_inventar_horarios(tmp_path):
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False}))
+    Cerebro(fake, HistorialMemoria(), ruta_recursos=_ruta_recursos(tmp_path, RECURSOS_CON_CITAS)).responder("c", "hola")
+
+    sistema = fake.ultima_llamada[0]
+    assert '- {"tipo": "agenda"}' in sistema
+    assert "NUNCA digas ni inventes días u horas disponibles" in sistema
+
+
+def test_con_citas_el_adjunto_agenda_se_acepta(tmp_path):
+    fake = FakeProveedor(json.dumps({"respuesta": "Elija el día", "derivar": False, "adjuntos": [{"tipo": "agenda"}]}))
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=_ruta_recursos(tmp_path, RECURSOS_CON_CITAS))
+
+    assert cerebro.responder("c", "quiero una cita").adjuntos == [{"tipo": "agenda", "datos": None}]
+
+
+def test_sin_citas_la_agenda_no_se_describe_y_el_adjunto_se_descarta(tmp_path):
+    fake = FakeProveedor(json.dumps({"respuesta": "ok", "derivar": False, "adjuntos": [{"tipo": "agenda"}]}))
+    cerebro = Cerebro(fake, HistorialMemoria(), ruta_recursos=_ruta_recursos(tmp_path, {}))
+
+    respuesta = cerebro.responder("c", "quiero una cita")
+
+    assert respuesta.adjuntos == []
+    assert '- {"tipo": "agenda"}' not in fake.ultima_llamada[0]

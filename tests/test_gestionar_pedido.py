@@ -258,3 +258,52 @@ def test_gestionar_pedido_nunca_importa_webhook():
 
     assert "import webhook" not in contenido
     assert "webhook" not in gestionar_pedido.__dict__
+
+
+# -- Sub-fase 7a: citas listar / citas cancelar <id> --
+
+
+def _cita_confirmada(tmp_path, numero="573001112233", inicio="2099-11-24 08:00"):
+    from citas import Citas
+
+    citas = Citas(tmp_path / "pedidos.db")
+    cita_id = citas.crear_en_construccion(numero, "panaderia", 1000.0)
+    citas.fijar_inicio(cita_id, inicio, "confirmacion", 1000.0)
+    citas.guardar_dato(cita_id, "nombre", "Persona de prueba", "confirmacion", 1000.0)
+    citas.confirmar(cita_id, 1, 3, "2026-01-01 00:00", 1000.0)
+    return citas, cita_id
+
+
+def test_citas_listar_muestra_las_proximas_sin_datos_y_con_telefono_enmascarado(tmp_path, monkeypatch, capsys):
+    _preparar(monkeypatch, tmp_path)
+    monkeypatch.delenv("PERFIL_NEGOCIO", raising=False)  # panaderia por defecto
+    _, cita_id = _cita_confirmada(tmp_path)
+
+    codigo = gestionar_pedido.main(["citas", "listar"])
+
+    salida = capsys.readouterr().out
+    assert codigo == 0
+    assert f"#{cita_id}" in salida and "8:00 a.m." in salida and "2233" in salida
+    assert "573001112233" not in salida and "Persona de prueba" not in salida
+
+
+def test_citas_cancelar_con_si_libera_el_horario(tmp_path, monkeypatch, capsys):
+    envios = _preparar(monkeypatch, tmp_path, respuestas_input=["si"])
+    citas, cita_id = _cita_confirmada(tmp_path)
+
+    codigo = gestionar_pedido.main(["citas", "cancelar", str(cita_id)])
+
+    assert codigo == 0
+    assert citas.obtener(cita_id)["estado"] == "cancelada"
+    assert envios == []  # no envía nada por WhatsApp
+    assert "573001112233" not in capsys.readouterr().out
+
+
+def test_citas_cancelar_con_no_o_inexistente_no_cambia_nada(tmp_path, monkeypatch):
+    _preparar(monkeypatch, tmp_path, respuestas_input=["no"])
+    citas, cita_id = _cita_confirmada(tmp_path)
+
+    assert gestionar_pedido.main(["citas", "cancelar", str(cita_id)]) == 0
+    assert citas.obtener(cita_id)["estado"] == "confirmada"
+    assert gestionar_pedido.main(["citas", "cancelar", "999"]) == 1
+    assert gestionar_pedido.main(["citas", "cancelar", "abc"]) == 1

@@ -125,7 +125,7 @@ class Cerebro:
             '{"respuesta": "<tu respuesta en español>", "derivar": true o false, '
             '"adjuntos": [<opcional: objetos como {"tipo": "ubicacion"}, '
             '{"tipo": "enlace", "clave": "<clave>"}, {"tipo": "imagen", "clave": "<clave>"}, '
-            '{"tipo": "botones", "clave": "<clave>"} o {"tipo": "menu"}>]}\n\n'
+            '{"tipo": "botones", "clave": "<clave>"}, {"tipo": "menu"} o {"tipo": "agenda"}>]}\n\n'
             "El campo 'adjuntos' es opcional: inclúyelo solo con las claves listadas en "
             "'Recursos disponibles' más abajo, cuando le sirvan al cliente. Nunca inventes "
             "una clave, URL o coordenada que no esté en esa lista. Si no hace falta ningún "
@@ -191,6 +191,15 @@ class Cerebro:
                 "productos ni precios: esta lista los toma directo del catálogo). Úsalo cuando el "
                 "cliente pregunte qué venden o pida ver el menú."
             )
+        if self._recursos.get("citas"):
+            # Sub-fase 7a: la IA nunca ve ni dice horarios; solo adjunta la
+            # agenda y el código arma los días y horas libres.
+            lineas.append(
+                '- {"tipo": "agenda"}: muestra los días con horarios libres para agendar una cita, '
+                "calculados automáticamente. Úsalo cuando el cliente quiera pedir, agendar o "
+                "reservar una cita. NUNCA digas ni inventes días u horas disponibles, ni confirmes "
+                "una cita: eso lo hace la agenda. No marques derivar por pedir una cita."
+            )
         return "\n".join(lineas)
 
     def _resolver_adjunto(self, item: dict) -> dict | None:
@@ -219,6 +228,10 @@ class Cerebro:
             catalogo = self._recursos.get("catalogo")
             if catalogo:
                 return {"tipo": "menu", "datos": catalogo}
+            return None
+        if tipo == "agenda":
+            if self._recursos.get("citas"):
+                return {"tipo": "agenda", "datos": None}
             return None
         return None
 

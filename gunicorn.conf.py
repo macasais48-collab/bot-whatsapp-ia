@@ -32,7 +32,10 @@ def post_worker_init(worker):
     # Con --workers 1 (hoy) hay un solo programador. Si algún día se suben los
     # workers, habría uno por worker, pero el reporte igual sale una sola vez
     # por semana: la reserva en la tabla reportes_enviados es atómica.
+    # Sub-fase 7a: también la retención diaria de datos de citas (solo existe
+    # si el perfil tiene agenda); es idempotente.
     extensiones = getattr(getattr(worker, "wsgi", None), "extensions", {})
-    iniciar = extensiones.get("iniciar_reporte_semanal")
-    if iniciar is not None:
-        iniciar()
+    for nombre in ("iniciar_reporte_semanal", "iniciar_retencion_citas"):
+        iniciar = extensiones.get(nombre)
+        if iniciar is not None:
+            iniciar()

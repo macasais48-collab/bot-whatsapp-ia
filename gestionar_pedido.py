@@ -1,9 +1,12 @@
 import sys
 import time
 
+import agenda
 import estado_pedido
+import flujo_cita
 import perfiles_negocio
 import reporte_semanal
+from citas import ESTADO_CONFIRMADA, Citas
 from env import obtener_env
 from mensajes_enriquecidos import enviar_plantilla, enviar_texto_con_wamid
 from pago_pedido import confirmar_pago, rechazar_pago
@@ -78,6 +81,44 @@ def avanzar_estado(pedidos: Pedidos, pedido_id: int) -> int:
     return 0
 
 
+# -- Sub-fase 7a: salida de emergencia de la agenda (citas listar / citas cancelar <id>) --
+
+
+def _describir_cita(cita: dict) -> str:
+    return (
+        f'#{cita["id"]} — {flujo_cita.fecha_hora_legible(cita["inicio"])} — '
+        f'cliente {enmascarar_numero(cita["numero_cliente"])}'
+    )
+
+
+def listar_citas(citas: Citas, perfil: str) -> None:
+    # Sin datos de la cita (nombre, paciente, motivo): solo número, fecha/hora
+    # y teléfono enmascarado.
+    print("Próximas citas confirmadas (de la más cercana a la más lejana):")
+    proximas = citas.listar_proximas(perfil, agenda.texto_inicio(agenda.ahora_bogota(time.time())))
+    if not proximas:
+        print("  (ninguna)")
+    for cita in proximas:
+        print(f"  {_describir_cita(cita)}")
+
+
+def cancelar_cita(citas: Citas, cita_id: int) -> int:
+    cita = citas.obtener(cita_id)
+    if cita is None or cita["estado"] != ESTADO_CONFIRMADA:
+        print(f"No hay una cita confirmada con el número {cita_id}.")
+        return 1
+    print(_describir_cita(cita))
+    respuesta = input("¿Confirma cancelar esta cita y liberar su horario? (si/no): ").strip().lower()
+    if respuesta not in ("si", "s"):
+        print("Cancelado, no se hizo ningún cambio.")
+        return 0
+    if citas.cancelar(cita_id, time.time()):
+        print(f"Cita #{cita_id} cancelada; el horario quedó libre. (El cliente no recibe ningún aviso automático.)")
+        return 0
+    print(f"La cita #{cita_id} ya no estaba confirmada; no se hizo ningún cambio.")
+    return 1
+
+
 def _confirmar_con_el_usuario(pedido: dict, accion: str) -> bool:
     print(f'{_describir(pedido)} — estado actual: {pedido["estado"]}')
     respuesta = input(f'¿Confirma "{accion}" sobre este pedido? (si/no): ').strip().lower()
@@ -142,9 +183,21 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return avanzar_estado(pedidos, pedido_id)
 
+    if argv == ["citas", "listar"]:
+        listar_citas(Citas(), perfiles_negocio.resolver_clave_perfil_activo())
+        return 0
+
+    if argv[0] == "citas" and len(argv) == 3 and argv[1] == "cancelar":
+        try:
+            cita_id = int(argv[2])
+        except ValueError:
+            print(f"'{argv[2]}' no es un número de cita válido.")
+            return 1
+        return cancelar_cita(Citas(), cita_id)
+
     print(
         "Uso: gestionar_pedido.py [listar | confirmar <id> | no-llego <id> | "
-        "estado listar | estado avanzar <id> | reporte]"
+        "estado listar | estado avanzar <id> | reporte | citas listar | citas cancelar <id>]"
     )
     return 1
 

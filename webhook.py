@@ -8,11 +8,13 @@ from flask import Flask, Response, request
 
 import derivacion
 import estado_pedido
+import flujo_cita as modulo_flujo_cita
 import pago_pedido
 import perfiles_negocio
 import reporte_semanal
 from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
+from citas import Citas
 from env import obtener_env
 from flujo_pedido import ID_BOTON_HACER_PEDIDO, FlujoPedido
 from llm import crear_proveedor_ia
@@ -51,6 +53,10 @@ MENSAJE_DUENO_RECORDATORIO = (
     "Este es el número del negocio. Aquí recibirá los avisos de pago para confirmar. "
     "Escriba *pedidos* para ver los pedidos activos y avanzar su estado, o *reporte* "
     "para ver las ventas de la semana."
+)
+# Mismo recordatorio para perfiles con agenda de citas (sub-fase 7a).
+MENSAJE_DUENO_RECORDATORIO_CON_CITAS = (
+    MENSAJE_DUENO_RECORDATORIO + " Escriba *citas* para ver las próximas citas agendadas."
 )
 # Código de error de Meta cuando un mensaje libre se envía fuera de la ventana
 # de 24 horas del destinatario (re-engagement message).
@@ -97,6 +103,17 @@ def _es_inicio_de_pedido(mensaje: dict, recursos: dict) -> bool:
     return False
 
 
+def _id_interactivo_entrante(mensaje: dict) -> str | None:
+    if mensaje.get("type") != "interactive":
+        return None
+    interactivo = mensaje.get("interactive", {})
+    if interactivo.get("type") == "button_reply":
+        return interactivo.get("button_reply", {}).get("id")
+    if interactivo.get("type") == "list_reply":
+        return interactivo.get("list_reply", {}).get("id")
+    return None
+
+
 def _firma_valida(cuerpo_crudo: bytes, firma_recibida: str | None) -> bool:
     app_secret = obtener_env("META_APP_SECRET")
     if not app_secret or not firma_recibida or not firma_recibida.startswith("sha256="):
@@ -134,6 +151,9 @@ def crear_app(
     plantilla_reporte_semanal_idioma: str | None = None,
     plantilla_aviso_derivacion_nombre: str | None = None,
     plantilla_aviso_derivacion_idioma: str | None = None,
+    citas: Citas | None = None,
+    plantilla_aviso_cita_nombre: str | None = None,
+    plantilla_aviso_cita_idioma: str | None = None,
     reloj=time.time,
 ) -> Flask:
     app = Flask(__name__)
@@ -197,6 +217,17 @@ def crear_app(
         )
         plantilla_aviso_derivacion_nombre = None
         plantilla_aviso_derivacion_idioma = None
+    if plantilla_aviso_cita_nombre is None:
+        plantilla_aviso_cita_nombre = obtener_env("PLANTILLA_AVISO_CITA_NOMBRE") or None
+    if plantilla_aviso_cita_idioma is None:
+        plantilla_aviso_cita_idioma = obtener_env("PLANTILLA_AVISO_CITA_IDIOMA") or None
+    if bool(plantilla_aviso_cita_nombre) != bool(plantilla_aviso_cita_idioma):
+        logger.warning(
+            "PLANTILLA_AVISO_CITA_NOMBRE y PLANTILLA_AVISO_CITA_IDIOMA deben configurarse juntas; "
+            "con solo una de las dos, el aviso de cita nueva usa el mensaje libre."
+        )
+        plantilla_aviso_cita_nombre = None
+        plantilla_aviso_cita_idioma = None
     if cerebro is None or mensaje_derivacion is None:
         ruta_negocio_resuelta = perfiles_negocio.ruta_perfil_para_clave(perfil)
     if cerebro is None:
@@ -238,6 +269,41 @@ def crear_app(
         plantilla_aviso_derivacion_nombre=plantilla_aviso_derivacion_nombre,
         plantilla_aviso_derivacion_idioma=plantilla_aviso_derivacion_idioma,
     )
+
+    # -- Agenda de citas (sub-fase 7a): solo si el perfil tiene "citas" --
+    config_citas = recursos.get("citas")
+    flujo_cita = None
+    if config_citas:
+        if citas is None:
+            citas = Citas()
+        flujo_cita = modulo_flujo_cita.FlujoCita(
+            citas=citas,
+            pedidos=pedidos,
+            config=config_citas,
+            perfil=perfil,
+            mensaje_derivacion=mensaje_derivacion,
+            enviar_texto_fn=enviar_texto_fn,
+            enviar_botones_fn=enviar_botones_fn,
+            enviar_lista_fn=enviar_lista_fn,
+            enviar_texto_con_wamid_fn=enviar_texto_con_wamid_fn,
+            reloj=reloj,
+            numero_dueno=numero_dueno,
+            enviar_plantilla_fn=enviar_plantilla_fn,
+            plantilla_aviso_cita_nombre=plantilla_aviso_cita_nombre,
+            plantilla_aviso_cita_idioma=plantilla_aviso_cita_idioma,
+            plantilla_aviso_derivacion_nombre=plantilla_aviso_derivacion_nombre,
+            plantilla_aviso_derivacion_idioma=plantilla_aviso_derivacion_idioma,
+        )
+
+        def _iniciar_retencion_citas():
+            return modulo_flujo_cita.iniciar_programador_retencion(
+                lambda: modulo_flujo_cita.aplicar_retencion(citas, perfil, config_citas, reloj())
+            )
+
+        # Igual que el reporte semanal: gunicorn.conf.py lo arranca en
+        # post_worker_init; crear_app nunca lanza hilos (las pruebas la crean
+        # muchas veces).
+        app.extensions["iniciar_retencion_citas"] = _iniciar_retencion_citas
 
     # -- Reporte semanal automático (sub-fase 5c) --
     # crear_app NO arranca el programador (las pruebas crean la app muchas
@@ -325,6 +391,17 @@ def crear_app(
             flujo_pedido.iniciar(numero_remitente, perfil, mensaje)
             return
 
+        if flujo_cita is not None:
+            id_interactivo = _id_interactivo_entrante(mensaje)
+            if flujo_cita.tiene_cita_en_construccion(numero_remitente) or modulo_flujo_cita.es_id_de_cita(id_interactivo):
+                logger.info("Mensaje atendido por el flujo de cita (remitente=%s)", numero_enmascarado)
+                flujo_cita.manejar_mensaje(numero_remitente, mensaje)
+                return
+            if id_interactivo == modulo_flujo_cita.ID_BOTON_AGENDAR:
+                logger.info("Agenda de citas ofrecida por botón (remitente=%s)", numero_enmascarado)
+                flujo_cita.ofrecer_dias(numero_remitente)
+                return
+
         tipo_mensaje = mensaje.get("type")
         if tipo_mensaje == "text":
             texto = mensaje.get("text", {}).get("body", "")
@@ -383,7 +460,7 @@ def crear_app(
             # resto de adjuntos (ubicación, enlaces, imágenes, u otro botones/menú
             # adicional) se envían como mensajes aparte, igual que antes.
             adjunto_interactivo = next(
-                (a for a in respuesta.adjuntos if a["tipo"] in ("botones", "menu")), None
+                (a for a in respuesta.adjuntos if a["tipo"] in ("botones", "menu", "agenda")), None
             )
             if adjunto_interactivo is not None:
                 _enviar_interactivo_con_texto(numero_remitente, respuesta.texto, adjunto_interactivo)
@@ -434,6 +511,23 @@ def crear_app(
                     "El aviso de derivación al dueño no se entregó (codigo=%s, titulo=%s, destino=%s, "
                     "cliente=%s).",
                     codigo, titulo, numero_enmascarado, cliente_enmascarado,
+                )
+            return
+
+        cita_id = citas.cita_por_wamid_aviso(wamid) if (wamid and citas is not None) else None
+        if cita_id is not None:
+            # Aviso de cita nueva al dueño no entregado (sub-fase 7a): con la
+            # ventana cerrada y sin plantilla es esperado (INFO); otro código, advertencia.
+            if codigo == CODIGO_ERROR_VENTANA_24H:
+                logger.info(
+                    "El aviso de la cita #%s al dueño no se entregó (codigo=%s, ventana de 24 horas "
+                    "cerrada, destino=%s).",
+                    cita_id, codigo, numero_enmascarado,
+                )
+            else:
+                logger.warning(
+                    "El aviso de la cita #%s al dueño no se entregó (codigo=%s, titulo=%s, destino=%s).",
+                    cita_id, codigo, titulo, numero_enmascarado,
                 )
             return
 
@@ -529,7 +623,24 @@ def crear_app(
             enviar_texto_fn(numero_dueno, reporte_semanal.texto_semana_en_curso(pedidos, ahora))
             return
 
+        if mensaje.get("type") == "text" and estado_pedido.normalizar_palabra(
+            mensaje.get("text", {}).get("body")
+        ) in modulo_flujo_cita.PALABRAS_CLAVE_CITAS:
+            _enviar_lista_citas(1)
+            return
+
         interactivo = mensaje.get("interactive", {}) if mensaje.get("type") == "interactive" else {}
+        if interactivo.get("type") == "list_reply" and config_citas:
+            fila_cita = modulo_flujo_cita.interpretar_fila_dueno(interactivo.get("list_reply", {}).get("id") or "")
+            if fila_cita is not None:
+                tipo_fila, valor = fila_cita
+                if tipo_fila == "ver":
+                    enviar_texto_fn(
+                        numero_dueno, modulo_flujo_cita.detalle_cita_para_dueno(citas.obtener(valor), config_citas)
+                    )
+                else:
+                    _enviar_lista_citas(valor)
+                return
         if interactivo.get("type") == "list_reply":
             fila = estado_pedido.interpretar_fila(interactivo.get("list_reply", {}).get("id") or "")
             if fila is not None:
@@ -571,11 +682,39 @@ def crear_app(
                     enviar_texto_fn(numero_dueno, resultado)
                     return
 
-        enviar_texto_fn(numero_dueno, MENSAJE_DUENO_RECORDATORIO)
+        enviar_texto_fn(
+            numero_dueno, MENSAJE_DUENO_RECORDATORIO_CON_CITAS if config_citas else MENSAJE_DUENO_RECORDATORIO
+        )
+
+    def _enviar_lista_citas(numero_pagina: int) -> None:
+        if not config_citas:
+            enviar_texto_fn(numero_dueno, modulo_flujo_cita.MENSAJE_AGENDA_NO_ACTIVA)
+            return
+        secciones = modulo_flujo_cita.pagina_de_proximas_citas(citas, perfil, config_citas, reloj(), numero_pagina)
+        if secciones is None:
+            enviar_texto_fn(numero_dueno, modulo_flujo_cita.MENSAJE_SIN_CITAS)
+            return
+        enviar_lista_fn(
+            numero_dueno,
+            modulo_flujo_cita.LISTA_CITAS_CUERPO,
+            modulo_flujo_cita.LISTA_CITAS_BOTON,
+            secciones,
+        )
 
     def _enviar_interactivo_con_texto(numero: str, texto: str, adjunto: dict) -> None:
         tipo = adjunto["tipo"]
         datos = adjunto["datos"]
+        if tipo == "agenda":
+            # La lista de días absorbe el texto de la IA como cuerpo (si cabe).
+            if flujo_cita is None:
+                enviar_texto_fn(numero, texto)
+            elif len(texto) <= LIMITE_CUERPO_INTERACTIVO:
+                if not flujo_cita.ofrecer_dias(numero, cuerpo=texto):
+                    logger.info("Agenda sin días disponibles (remitente=%s)", enmascarar_numero(numero))
+            else:
+                enviar_texto_fn(numero, texto)
+                flujo_cita.ofrecer_dias(numero)
+            return
         if len(texto) <= LIMITE_CUERPO_INTERACTIVO:
             cuerpo = texto
         else:
@@ -606,6 +745,8 @@ def crear_app(
             enviar_botones_fn(numero, datos["descripcion"], opciones)
         elif tipo == "menu":
             _enviar_menu(numero, datos)
+        elif tipo == "agenda" and flujo_cita is not None:
+            flujo_cita.ofrecer_dias(numero)
 
     def _enviar_menu(numero: str, catalogo: dict, cuerpo: str = MENU_TEXTO_CUERPO) -> None:
         # El menú SIEMPRE se arma aquí, a partir del catálogo validado del perfil:

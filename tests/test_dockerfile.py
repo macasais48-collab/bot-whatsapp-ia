@@ -48,6 +48,7 @@ def test_dockerfile_copia_los_modulos_de_la_toma_de_pedidos():
         "derivacion.py",
         "agenda.py",
         "citas.py",
+        "flujo_cita.py",
     ):
         assert nombre_archivo in contenido, (
             f"{nombre_archivo} no aparece en el Dockerfile: agrégalo a la línea COPY para que no "

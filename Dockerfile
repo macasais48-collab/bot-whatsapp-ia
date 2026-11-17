@@ -21,6 +21,7 @@ COPY --chown=appuser:appuser \
     derivacion.py \
     env.py \
     estado_pedido.py \
+    flujo_cita.py \
     flujo_pedido.py \
     gestionar_pedido.py \
     gunicorn.conf.py \

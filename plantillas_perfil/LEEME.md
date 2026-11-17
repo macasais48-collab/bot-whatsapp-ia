@@ -63,7 +63,49 @@ JSON no admite comentarios: las indicaciones van aquí. El motor valida todo al 
 | `botones.bienvenida` | Hasta 3 opciones. `equivale_a` es la frase que el asistente recibe cuando el cliente toca el botón. El id `hacer_pedido` es especial: inicia el pedido guiado (solo si hay `catalogo`). | Máximo 3 botones; `titulo` de 1 a 20 caracteres; ids únicos. |
 | `domicilio` | `pedido_minimo` (entero, puede ser 0) y una entrada por zona con `nombre`, `costo` (entero) y `tiempo_estimado`. | Nombre de zona de 1 a 24 caracteres; costos enteros ≥ 0. |
 
-Si el negocio no toma pedidos por el bot, borre `catalogo`, `domicilio` y el botón `hacer_pedido`. Solo se admiten estas secciones en la raíz: `ubicacion`, `enlaces`, `imagenes`, `catalogo`, `domicilio`, `botones`.
+### Agenda de citas (opcional)
+
+Si el negocio agenda citas por el bot, agregue la sección `citas` en la raíz del JSON (y deje el bloque "Con agenda" en el perfil). Ejemplo:
+
+```json
+"citas": {
+  "duracion_minutos": 30,
+  "cupos_por_horario": 1,
+  "anticipacion_minima_minutos": 60,
+  "dias_hacia_adelante": 14,
+  "max_citas_por_cliente": 3,
+  "retencion_dias": 30,
+  "festivos": "cerrado",
+  "dias_bloqueados": ["2026-12-24"],
+  "telefono_negocio": "300 000 0000",
+  "horario": {
+    "lunes": [["08:00", "12:00"], ["14:00", "18:00"]],
+    "sabado": [["09:00", "13:00"]]
+  },
+  "datos": [
+    {"clave": "nombre", "pregunta": "¿A nombre de quién agendamos la cita?", "etiqueta": "Nombre"},
+    {"clave": "motivo", "pregunta": "¿Cuál es el motivo de la cita?", "etiqueta": "Motivo"}
+  ]
+}
+```
+
+| Campo | Qué es | Límites |
+| --- | --- | --- |
+| `duracion_minutos` (obligatorio) | Duración de cada cita; las horas se ofrecen cada tantos minutos. | 5 a 480. |
+| `horario` (obligatorio) | Franjas por día: `lunes` … `domingo` (minúsculas, sin tilde). Día ausente = no se atiende. | `"HH:MM"` 24 h; inicio < fin; franjas sin cruzarse. |
+| `datos` (obligatorio) | Lo que se le pregunta al cliente, uno por mensaje, después de que autoriza el tratamiento de datos. | 1 a 5; `clave` en minúsculas; `etiqueta` hasta 20 caracteres. |
+| `cupos_por_horario` | Cuántas citas a la misma hora (p. ej. 2 profesionales). | 1 a 20; por defecto 1. |
+| `anticipacion_minima_minutos` | Cuánto antes se puede reservar. | Por defecto 60. |
+| `dias_hacia_adelante` | Hasta cuántos días después de hoy se ofrece. | 1 a 60; por defecto 14. |
+| `max_citas_por_cliente` | Citas futuras por número, para que nadie llene la agenda. | 1 a 20; por defecto 3. |
+| `retencion_dias` | Días después de la cita en que se borran los datos personales. | 1 a 365; por defecto 30. |
+| `festivos` | `"cerrado"` o `"abierto"` (usa el horario del día). | Por defecto `"cerrado"`. |
+| `dias_bloqueados` | Vacaciones o cierres puntuales. | Fechas `"AAAA-MM-DD"`. |
+| `telefono_negocio` | Se le da al cliente si no autoriza el tratamiento de datos. | Opcional. |
+
+Un botón de bienvenida con id `agendar_cita` abre la agenda directamente. Cambiar la configuración no toca las citas ya agendadas: solo cambia lo que se ofrece desde ese momento. Para el aviso de cita nueva al dueño, ver `docs/plantilla_aviso_cita.md`.
+
+Si el negocio no toma pedidos por el bot, borre `catalogo`, `domicilio` y el botón `hacer_pedido`. Solo se admiten estas secciones en la raíz: `ubicacion`, `enlaces`, `imagenes`, `catalogo`, `domicilio`, `botones`, `citas`.
 
 ## 5. Revisar que no quedó nada de la plantilla y validar en el PC
 

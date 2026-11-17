@@ -7,6 +7,7 @@ import pytest
 
 from almacenamiento import HistorialSQLite
 from cerebro import Cerebro
+from citas import Citas
 from historial import HistorialMemoria
 from llm.base import ProveedorIA
 from pedidos import Pedidos
@@ -302,6 +303,9 @@ def fabrica_cliente(
         plantilla_aviso_pedido_nuevo_idioma=None,
         plantilla_aviso_derivacion_nombre=None,
         plantilla_aviso_derivacion_idioma=None,
+        citas=None,
+        plantilla_aviso_cita_nombre=None,
+        plantilla_aviso_cita_idioma=None,
     ):
         contador["n"] += 1
         historial_dedup = HistorialSQLite(tmp_path / f"prueba_{contador['n']}.db")
@@ -329,6 +333,10 @@ def fabrica_cliente(
             plantilla_aviso_pedido_nuevo_idioma=plantilla_aviso_pedido_nuevo_idioma,
             plantilla_aviso_derivacion_nombre=plantilla_aviso_derivacion_nombre,
             plantilla_aviso_derivacion_idioma=plantilla_aviso_derivacion_idioma,
+            # Siempre una base temporal: nunca la base por defecto del repo.
+            citas=citas or Citas(tmp_path / f"citas_{contador['n']}.db"),
+            plantilla_aviso_cita_nombre=plantilla_aviso_cita_nombre,
+            plantilla_aviso_cita_idioma=plantilla_aviso_cita_idioma,
             reloj=reloj or (lambda: RELOJ_PRUEBA_SEGUNDOS),
         )
         app.testing = True
@@ -1882,3 +1890,177 @@ def test_status_failed_con_otro_codigo_del_aviso_de_derivacion_es_advertencia(
     assert "aviso de derivación" in advertencias[0]
     assert "desconocido" not in advertencias[0]
     assert NUMERO_CLIENTE_DERIVACION not in advertencias[0]
+
+
+# -- Sub-fase 7a.2: agenda de citas --
+
+import webhook as modulo_webhook  # noqa: E402
+
+CLIENTE_CITA = "573001112233"
+# RELOJ_PRUEBA_SEGUNDOS = martes 14/11/2023, 5:13 p.m. en Bogotá: la agenda
+# ofrece desde el miércoles 15/11/2023.
+RECURSOS_CON_CITAS = {
+    "botones": {
+        "bienvenida": {
+            "descripcion": "Hola",
+            "opciones": [{"id": "agendar_cita", "titulo": "Pedir una cita", "equivale_a": "Quiero una cita"}],
+        }
+    },
+    "citas": {
+        "duracion_minutos": 30,
+        "dias_hacia_adelante": 6,
+        "horario": {d: [["08:00", "10:00"]] for d in ("lunes", "martes", "miercoles", "jueves", "viernes")},
+        "datos": [
+            {"clave": "nombre", "pregunta": "¿A nombre de quién?", "etiqueta": "Nombre"},
+            {"clave": "motivo", "pregunta": "¿Cuál es el motivo?", "etiqueta": "Motivo"},
+        ],
+    },
+}
+
+
+def _ruta_recursos_con_citas(tmp_path):
+    ruta = tmp_path / "recursos_con_citas.json"
+    ruta.write_text(json.dumps(RECURSOS_CON_CITAS), encoding="utf-8")
+    return ruta
+
+
+def _fila(id_mensaje, numero, id_fila):
+    return _payload_mensaje(
+        id_mensaje, numero, {"type": "interactive", "interactive": {"type": "list_reply", "list_reply": {"id": id_fila, "title": "x"}}}
+    )
+
+
+def _boton(id_mensaje, numero, id_boton):
+    return _payload_mensaje(
+        id_mensaje, numero, {"type": "interactive", "interactive": {"type": "button_reply", "button_reply": {"id": id_boton, "title": "x"}}}
+    )
+
+
+def _cliente_con_citas(fabrica_cliente, tmp_path, **kwargs):
+    citas = Citas(tmp_path / "citas_agenda.db")
+    salida = kwargs.pop(
+        "salida_ia", json.dumps({"respuesta": "Con gusto, elija el día:", "derivar": False, "adjuntos": [{"tipo": "agenda"}]})
+    )
+    cliente = fabrica_cliente(salida, ruta_recursos=_ruta_recursos_con_citas(tmp_path), citas=citas, **kwargs)
+    return cliente, citas
+
+
+def _agendar_por_webhook(cliente, numero=CLIENTE_CITA):
+    _post_con_firma(cliente, _payload_mensaje_texto("w1", numero, "quiero una cita"))
+    _post_con_firma(cliente, _fila("w2", numero, "cita_dia_2023-11-15"))
+    _post_con_firma(cliente, _fila("w3", numero, "cita_hora_2023-11-15_08:00"))
+    _post_con_firma(cliente, _boton("w4", numero, "cita_acepto"))
+    _post_con_firma(cliente, _payload_mensaje_texto("w5", numero, "Persona de prueba"))
+    _post_con_firma(cliente, _payload_mensaje_texto("w6", numero, "Control general"))
+    _post_con_firma(cliente, _boton("w7", numero, "cita_confirmar"))
+
+
+def test_7a_la_ia_adjunta_la_agenda_y_el_codigo_arma_los_dias(fabrica_cliente, envios_lista, tmp_path):
+    cliente, _ = _cliente_con_citas(fabrica_cliente, tmp_path)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("w1", CLIENTE_CITA, "quiero una cita"))
+
+    numero, cuerpo, _, secciones = envios_lista.llamadas[-1]
+    assert numero == CLIENTE_CITA
+    assert cuerpo == "Con gusto, elija el día:"  # el texto de la IA es el cuerpo de la lista
+    assert [f["id"] for f in secciones[0]["filas"]][0] == "cita_dia_2023-11-15"
+
+
+def test_7a_perfil_sin_citas_descarta_el_adjunto_agenda(fabrica_cliente, envios, envios_lista):
+    cliente = fabrica_cliente(
+        json.dumps({"respuesta": "Con gusto", "derivar": False, "adjuntos": [{"tipo": "agenda"}]})
+    )
+
+    _post_con_firma(cliente, _payload_mensaje_texto("w1", CLIENTE_CITA, "quiero una cita"))
+
+    assert envios.llamadas == [(CLIENTE_CITA, "Con gusto")]
+    assert envios_lista.llamadas == []
+
+
+def test_7a_boton_agendar_cita_ofrece_los_dias_sin_pasar_por_la_ia(fabrica_cliente, envios_lista, tmp_path):
+    cliente, _ = _cliente_con_citas(fabrica_cliente, tmp_path, salida_ia="esto no es json")
+
+    _post_con_firma(cliente, _boton("w1", CLIENTE_CITA, "agendar_cita"))
+
+    assert envios_lista.llamadas[-1][1] == "Elija el día para su cita:"
+
+
+def test_7a_agendar_de_punta_a_punta_avisa_al_dueno(fabrica_cliente, envios, envios_con_wamid, tmp_path):
+    cliente, citas = _cliente_con_citas(fabrica_cliente, tmp_path, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+
+    _agendar_por_webhook(cliente)
+
+    proximas = citas.listar_proximas("panaderia", "2023-11-14 00:00")
+    assert len(proximas) == 1 and proximas[0]["inicio"] == "2023-11-15 08:00"
+    assert "quedó agendada para el miércoles 15 de noviembre, 8:00 a.m." in envios.llamadas[-1][1]
+    destino, aviso = envios_con_wamid.llamadas[-1]
+    assert destino == NUMERO_DUENO_DE_PRUEBA and CLIENTE_CITA in aviso and "Control general" in aviso
+
+
+def test_7a_con_cita_en_construccion_el_texto_no_va_a_la_ia(fabrica_cliente, envios, tmp_path):
+    cliente, citas = _cliente_con_citas(fabrica_cliente, tmp_path)
+    _post_con_firma(cliente, _fila("w1", CLIENTE_CITA, "cita_dia_2023-11-15"))
+    _post_con_firma(cliente, _fila("w2", CLIENTE_CITA, "cita_hora_2023-11-15_08:00"))
+    _post_con_firma(cliente, _boton("w3", CLIENTE_CITA, "cita_acepto"))
+
+    _post_con_firma(cliente, _payload_mensaje_texto("w4", CLIENTE_CITA, "Persona de prueba"))
+
+    assert citas.obtener_en_construccion(CLIENTE_CITA)["datos"] == {"nombre": "Persona de prueba"}
+    assert envios.llamadas[-1] == (CLIENTE_CITA, "¿Cuál es el motivo?")
+
+
+def test_7a_dueno_escribe_citas_ve_la_lista_y_el_detalle(fabrica_cliente, envios, envios_lista, tmp_path):
+    cliente, citas = _cliente_con_citas(fabrica_cliente, tmp_path, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+    _post_con_firma(cliente, _payload_mensaje_texto("d0", NUMERO_DUENO_DE_PRUEBA, "Citas"))
+    assert envios.llamadas[-1] == (NUMERO_DUENO_DE_PRUEBA, "No hay citas próximas agendadas.")
+    _agendar_por_webhook(cliente)
+
+    _post_con_firma(cliente, _payload_mensaje_texto("d1", NUMERO_DUENO_DE_PRUEBA, "citas"))
+    numero, _, _, secciones = envios_lista.llamadas[-1]
+    fila = secciones[0]["filas"][0]
+    _post_con_firma(cliente, _fila("d2", NUMERO_DUENO_DE_PRUEBA, fila["id"]))
+
+    assert numero == NUMERO_DUENO_DE_PRUEBA
+    assert fila["titulo"] == "Mié 15 nov 8:00 a.m." and CLIENTE_CITA not in str(fila)
+    detalle = envios.llamadas[-1]
+    assert detalle[0] == NUMERO_DUENO_DE_PRUEBA and CLIENTE_CITA in detalle[1] and "Motivo: Control general" in detalle[1]
+
+
+def test_7a_dueno_sin_agenda_activada_y_recordatorio(fabrica_cliente, envios, tmp_path):
+    sin_agenda = fabrica_cliente(numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+    _post_con_firma(sin_agenda, _payload_mensaje_texto("d1", NUMERO_DUENO_DE_PRUEBA, "citas"))
+    _post_con_firma(sin_agenda, _payload_mensaje_texto("d2", NUMERO_DUENO_DE_PRUEBA, "hola"))
+    con_agenda, _ = _cliente_con_citas(fabrica_cliente, tmp_path, numero_dueno=NUMERO_DUENO_DE_PRUEBA)
+    _post_con_firma(con_agenda, _payload_mensaje_texto("d3", NUMERO_DUENO_DE_PRUEBA, "hola"))
+
+    assert envios.llamadas[0] == (NUMERO_DUENO_DE_PRUEBA, "Este negocio no tiene la agenda de citas activada.")
+    assert envios.llamadas[1] == (NUMERO_DUENO_DE_PRUEBA, MENSAJE_DUENO_RECORDATORIO)
+    assert envios.llamadas[2] == (NUMERO_DUENO_DE_PRUEBA, modulo_webhook.MENSAJE_DUENO_RECORDATORIO_CON_CITAS)
+    assert "*citas*" in envios.llamadas[2][1]
+
+
+@pytest.mark.parametrize("codigo, nivel", [(131047, logging.INFO), (131026, logging.WARNING)])
+def test_7a_status_failed_del_aviso_de_cita(fabrica_cliente, caplog, tmp_path, codigo, nivel):
+    citas = Citas(tmp_path / "citas_status.db")
+    cita_id = citas.crear_en_construccion(CLIENTE_CITA, "panaderia", 1000.0)
+    citas.fijar_wamid_aviso(cita_id, "wamid.cita")
+    cliente = fabrica_cliente(citas=citas)
+    caplog.set_level(logging.INFO, logger="webhook")
+
+    _post_con_firma(
+        cliente,
+        _payload_estado("wamid.cita", NUMERO_DUENO_DE_PRUEBA, status="failed", errors=[{"code": codigo, "title": "x"}]),
+    )
+
+    registros = [r for r in caplog.records if f"cita #{cita_id}" in r.getMessage()]
+    assert len(registros) == 1 and registros[0].levelno == nivel
+    assert NUMERO_DUENO_DE_PRUEBA not in registros[0].getMessage()
+
+
+def test_7a_la_retencion_solo_se_registra_si_el_perfil_tiene_agenda(fabrica_cliente, tmp_path):
+    # crear_app solo deja la función registrada; nunca arranca el programador.
+    sin_agenda = fabrica_cliente()
+    con_agenda, _ = _cliente_con_citas(fabrica_cliente, tmp_path)
+
+    assert "iniciar_retencion_citas" not in sin_agenda.application.extensions
+    assert callable(con_agenda.application.extensions["iniciar_retencion_citas"])

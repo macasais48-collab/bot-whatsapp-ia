@@ -26,3 +26,16 @@ def test_post_worker_init_sin_la_extension_no_falla():
 
     conf.post_worker_init(SimpleNamespace(wsgi=SimpleNamespace(extensions={})))
     conf.post_worker_init(SimpleNamespace())
+
+
+def test_post_worker_init_arranca_tambien_la_retencion_de_citas_si_existe():
+    conf = _cargar_gunicorn_conf()
+    llamadas = []
+    extensiones = {
+        "iniciar_reporte_semanal": lambda: llamadas.append("reporte"),
+        "iniciar_retencion_citas": lambda: llamadas.append("retencion"),
+    }
+
+    conf.post_worker_init(SimpleNamespace(wsgi=SimpleNamespace(extensions=extensiones)))
+
+    assert llamadas == ["reporte", "retencion"]

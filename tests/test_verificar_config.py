@@ -106,3 +106,11 @@ def test_numero_dueno_con_mas_espacios_y_guiones_se_normaliza_antes_de_validar()
 
     assert "NUMERO_DUENO: con valor" in reporte
     assert "no parece válido" not in reporte
+
+
+def test_variables_del_aviso_de_cita_estan_y_se_marcan_como_opcionales():
+    reporte = generar_reporte({"PLANTILLA_AVISO_CITA_IDIOMA": "es_CO"})
+
+    assert "PLANTILLA_AVISO_CITA_IDIOMA: con valor" in reporte
+    assert "es_CO" not in reporte
+    assert "PLANTILLA_AVISO_CITA_NOMBRE: VACÍO (opcional)" in reporte

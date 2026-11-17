@@ -200,6 +200,29 @@ El reporte solo tiene cifras agregadas y nombres de productos del catálogo. Las
 docker compose exec bot-whatsapp python gestionar_pedido.py reporte
 ```
 
+### Derivación con aviso al negocio
+
+Cuando el bot pasa una conversación a una persona (lo decide la IA, o el cliente escribe "asesor" o pide cancelar durante la verificación de un pago), el cliente recibe el mensaje de derivación del perfil y el dueño recibe un aviso con el teléfono del cliente y un resumen de una línea. Por plantilla (`PLANTILLA_AVISO_DERIVACION_NOMBRE`/`_IDIOMA`, ver `docs/plantilla_aviso_derivacion.md`) o, si no está configurada, como mensaje libre. Como máximo un aviso por cliente cada 30 minutos.
+
+### Agenda de citas
+
+Opcional por perfil: se activa con la sección `citas` de `recursos_<perfil>.json` (duración, cupos por horario, anticipación mínima, días hacia adelante, tope de citas por cliente, retención de datos, festivos, días bloqueados, horario por día y datos a pedir). Sin esa sección, el perfil funciona igual que siempre.
+
+**Cliente:** pide una cita (la IA adjunta la agenda, o toca un botón con id `agendar_cita`) → elige el día (lista) → la hora libre (lista) → autoriza el tratamiento de datos con [Acepto]/[No acepto] (Ley 1581; la aceptación queda con fecha y hora) → da los datos que define el perfil, uno por mensaje → ve el resumen y confirma. Los días y horas los calcula siempre el código (`agenda.py`), nunca la IA: nunca se ofrece un horario ocupado, pasado, fuera del horario de atención, en festivo cerrado o antes de la anticipación mínima, y una fila de una lista vieja se vuelve a validar. El cupo se reserva al confirmar en una sola sentencia atómica de SQLite que verifica también el tope de citas futuras del cliente (`citas.py`); si el horario se ocupó mientras tanto, el bot ofrece los que siguen libres. Si no autoriza, no se agenda: se le da el teléfono del negocio y se deriva. "cancelar", "asesor" y 30 minutos sin respuesta funcionan como en los pedidos.
+
+**Dueño:** recibe el aviso de cada cita nueva (plantilla `aviso_cita_nueva` si están `PLANTILLA_AVISO_CITA_NOMBRE`/`_IDIOMA`, ver `docs/plantilla_aviso_cita.md`; si no, mensaje libre) y escribe **citas** para ver las próximas, paginadas como los pedidos; al tocar una ve los datos y el teléfono del cliente.
+
+**Retención:** cada día a las 3:00 a.m. (y al arrancar) se borran los datos personales y el teléfono de las citas con más de `retencion_dias` (30 por defecto), conservando fecha y hora para estadísticas.
+
+**Salida de emergencia por consola** (mientras no exista cancelar desde el chat):
+
+```bash
+docker compose exec bot-whatsapp python gestionar_pedido.py citas listar
+docker compose exec bot-whatsapp python gestionar_pedido.py citas cancelar <id>
+```
+
+Fuera de esta versión (siguientes pasos): recordatorios automáticos, cancelar y reprogramar desde el chat, Google Calendar, servicios con duraciones distintas y varios profesionales por perfil.
+
 **Logging bajo gunicorn:** `gunicorn.conf.py` (cargado con `--config` desde el `CMD` del Dockerfile) configura el logging en cada worker (`post_fork`), para que los eventos de `webhook.py`, `flujo_pedido.py` y `pago_pedido.py` (p. ej. "Pedido #7 confirmado", "mensaje antiguo ignorado") se vean con `docker compose logs`. El log de accesos propio de gunicorn está desactivado para no duplicar la línea que ya registra `webhook.py` por cada petición (método, ruta sin cadena de consulta, código de estado) — esa línea nunca incluye el verify token de Meta, y las peticiones a `/salud` del healthcheck no se registran. Los eventos de la aplicación nunca incluyen el número de teléfono completo (solo los últimos 4 dígitos, vía `telefono.py`), el texto de los mensajes, direcciones, ubicaciones ni el contenido de un comprobante de pago — solo el hecho de que algo pasó.
 
 ### Créditos de fotos
@@ -252,7 +275,11 @@ BotWhatsApp/
 ├── pago_pedido.py                 # Confirmar/rechazar un pago y avisar al dueño de un pedido nuevo (compartido webhook/script)
 ├── estado_pedido.py               # Estados de entrega del pedido: lista del dueño, botón del siguiente paso, aviso al cliente
 ├── reporte_semanal.py             # Reporte semanal al dueño: cifras agregadas, envío automático (APScheduler) y a pedido
-├── gestionar_pedido.py             # CLI de respaldo: pagos, estados de entrega y reporte dentro del contenedor
+├── derivacion.py                  # Aviso al dueño cuando el bot deriva a una persona (IA y flujo de pedido)
+├── agenda.py                      # Agenda de citas: validación de la configuración y cálculo puro de horarios libres
+├── citas.py                       # Tabla de citas: reserva atómica, tope por cliente, consentimiento y retención
+├── flujo_cita.py                  # Flujo de agendamiento del cliente, aviso de cita nueva y vista "citas" del dueño
+├── gestionar_pedido.py             # CLI de respaldo: pagos, estados de entrega, reporte y citas dentro del contenedor
 ├── telefono.py                    # Enmascarado/normalización de número de teléfono
 ├── gunicorn.conf.py                # Logging de gunicorn y arranque del reporte semanal (post_worker_init)
 ├── verificar_config.py            # Verifica que .env tenga las variables, sin exponer valores
@@ -262,6 +289,9 @@ BotWhatsApp/
 ├── docs/plantilla_aviso_dueno.md  # Especificación de la plantilla del aviso al dueño (WhatsApp Manager)
 ├── docs/plantilla_aviso_pedido_nuevo.md  # Especificación de la plantilla del aviso de pedido nuevo (WhatsApp Manager)
 ├── docs/plantilla_reporte_semanal.md     # Especificación de la plantilla del reporte semanal (WhatsApp Manager)
+├── docs/plantilla_aviso_derivacion.md    # Especificación de la plantilla del aviso de derivación (WhatsApp Manager)
+├── docs/plantilla_aviso_cita.md          # Especificación de la plantilla del aviso de cita nueva (WhatsApp Manager)
+├── plantillas_perfil/             # Plantilla de perfil en blanco para montar clientes nuevos (con su LEEME)
 ├── tests/                         # Pruebas automáticas (pytest)
 ├── tests/carga/                   # Prueba de carga aparte (no es parte de la suite de pytest)
 └── clientes/<clave>/              # Perfiles de cliente privados (fuera de git y de la imagen; ver "Perfiles de cliente")
