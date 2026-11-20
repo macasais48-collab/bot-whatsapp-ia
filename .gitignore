@@ -1,4 +1,7 @@
-.env
+# Cualquier variante del .env (.env.save de nano, .envy, .env.bak-*, .env.local...),
+# en cualquier carpeta. La unica excepcion es la plantilla versionada.
+.env*
+!.env.example
 venv/
 *.db
 __pycache__/
